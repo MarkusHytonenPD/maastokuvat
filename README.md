@@ -23,6 +23,7 @@ Sovellus kysyy:
 4. **Kameran kellodrifti** minuutteina — vain kellon heitto, aikavyöhyke hoidetaan itse
 5. **Suurin sallittu GPX-aukko** minuutteina (oletus 10)
 6. **Kirjoitetaanko GPX-koordinaatti kuvakopion EXIF:iin** (oletus kyllä)
+7. **Viedäänkö kuvat GitHubiin** (oletus kyllä)
 
 ## Mitä syntyy
 
@@ -104,12 +105,51 @@ ei alkuperäiseen kuvaan. Näin kuva on paikkatietoinen missä tahansa ohjelmass
 mutta lähdekansio jää koskemattomaksi. (Sisarsovellus `pipeline.py` kirjoittaa
 lähdekuvaan, koska se ei kopioi kuvia erikseen.)
 
+## Kuvat GitHubissa
+
+Kuvat viedään repoon **[MarkusHytonenPD/maastokuvat](https://github.com/MarkusHytonenPD/maastokuvat)**
+alkuperäiskoossa, ja taso saa niihin raw-osoitteet:
+
+```
+url            → …/main/projektit/[nimi]/kuvat/[tiedosto]        (alkuperäinen, ~2 MB)
+url_esikatselu → …/main/projektit/[nimi]/esikatselu/[tiedosto]   (1200 px, ~170 kt)
+```
+
+**Repo on julkinen.** Se on pakko: privaatin repon raw-osoite vaatii tokenin,
+jota QGIS ei osaa antaa, joten kuvat eivät näkyisi lainkaan.
+
+**Paikallinen tiedosto voittaa aina.** Tason lauseke on
+`CASE WHEN file_exists(paikallinen) THEN file://… WHEN url <> '' THEN url ELSE … END`,
+eli tällä koneella kuvat luetaan levyltä (nopea, toimii offline) ja verkko-osoitetta
+käytetään vain jos tiedostoa ei ole.
+
+### Toinen kone
+
+Kopioi pelkkä `maastokuvat.gpkg` ja avaa se QGIS:ssä — siinä kaikki. Kuvat
+tulevat GitHubista eikä levytilaa kulu kilotavua enempää. Tyyli on tiedoston
+sisällä, joten mitään muuta ei tarvitse siirtää.
+
+Vaihtoehtoisesti `git clone` tuo kuvatkin levylle, jolloin taso toimii myös
+ilman verkkoa.
+
+### Kokorajat
+
+| Raja | Arvo | Näillä kuvilla |
+|---|---|---|
+| Yksittäinen tiedosto | 100 MB (esto) | 2,0 MB/kuva |
+| Repo, suositus | 1 GB | ~460 kuvaa (kuva + esikatselu) |
+| Repo, yläraja | ~5 GB | ~2 300 kuvaa |
+
+Git-historia ei kevene: poistettu kuva jää historiaan, ja koon saa alas vain
+kirjoittamalla historian uudelleen. **Älä käytä Git LFS:ää** — raw-osoite ei
+tarjoile LFS-sisältöä kuvana, joten `<img>`-viittaus rikkoutuisi.
+
+Vienti tapahtuu ajon lopussa automaattisesti (`git_push`); ajossa voi vastata
+`e`, jos haluaa vain paikallisen tason. Repo ja branch ovat `maastokuvat.py`:n
+vakioissa `GITHUB_USER` / `GITHUB_REPO` / `GITHUB_BRANCH`.
+
 ## Vielä päättämättä
 
-- **GitHub-vienti.** Tasossa on valmiina `url`-kenttä ja lauseke käyttää sitä
-  ensisijaisesti paikallisen polun sijaan, joten kuvien vienti julkiseen repoon
-  on pieni lisäys. Vaatii julkisen repon (privaatin raw-URL:t vaativat tokenin)
-  ja verkkoyhteyden. Nyt kenttä jätetään tyhjäksi ja kaikki toimii paikallisesti.
 - **Valmis .qgz-projekti taustakartalla.** Nyt tuotetaan vain taso; MML-taustakartan
   voi lisätä omaan projektiin itse.
 
@@ -127,9 +167,10 @@ Testattu: QGIS 3.44.11, Python 3.12.
 python3 test_maastokuvat.py
 ```
 
-46 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
+61 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
 EXIF-luku, GPX-interpolointi, aukkosuoja, aikavyöhykemuunnos, duplikaattisuoja,
-käsin täytettyjen arvojen säilyminen ja tyylin selviäminen GeoPackagesta.
+käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, GitHub-osoitteet ja
+tyylin selviäminen GeoPackagesta. Testit eivät koske oikeaan git-repoon.
 
 ## Tiedostot
 

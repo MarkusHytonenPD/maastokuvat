@@ -185,8 +185,9 @@ def testaa_ajo_gpx_haaralla(tmp: Path):
     tee_jpeg(kuvakansio / "suunnalla.jpg", datetime.datetime(2026, 7, 20, 10, 7),
              lat=62.45, lon=28.45, suunta=270.0)
 
+    # github=False: testi ei koske oikeaan git-repoon
     t = mk.aja("testi", [kuvakansio], [gpx], aikaero_min=0, max_aukko_min=10,
-               kirjoita_exif=True)
+               kirjoita_exif=True, github=False)
 
     vaita(t["tuotu"] == 3, f"3 kuvaa tuotu ({t['tuotu']})")
     vaita(t["gpx"] == 1, f"1 kuva sijoitettu GPX:stä ({t['gpx']})")
@@ -274,7 +275,7 @@ def testaa_duplikaatit_ja_kasin_muokkaus(tmp: Path, projektikansio: Path):
 
     kuvakansio = tmp / "kenttakuvat"
     gpx = tmp / "ajo" / "loki.gpx"
-    t2 = mk.aja("testi", [kuvakansio], [gpx], kirjoita_exif=True)
+    t2 = mk.aja("testi", [kuvakansio], [gpx], kirjoita_exif=True, github=False)
     vaita(t2["tuotu"] == 0, f"toinen ajo ei tuo mitään uudelleen ({t2['tuotu']})")
     vaita(t2["duplikaatti"] == 3, f"3 kuvaa ohitettu duplikaattina ({t2['duplikaatti']})")
     vaita(t2["kohteita"] == 3, f"taso rakennettiin silti uudelleen, 3 pistettä ({t2['kohteita']})")
@@ -289,7 +290,7 @@ def testaa_duplikaatit_ja_kasin_muokkaus(tmp: Path, projektikansio: Path):
 
     # Kohdetiedoston poisto käsin → kuva tuodaan uudelleen
     (projektikansio / "kuvat" / "kentta1.jpg").unlink()
-    t3 = mk.aja("testi", [kuvakansio], [gpx], kirjoita_exif=True)
+    t3 = mk.aja("testi", [kuvakansio], [gpx], kirjoita_exif=True, github=False)
     vaita(t3["tuotu"] == 1, f"poistettu kuva tuodaan uudelleen ({t3['tuotu']})")
 
 
@@ -314,6 +315,49 @@ def testaa_esikatselun_uusiminen(projektikansio: Path):
         mk.ESIKATSELU_PX = vanha
 
 
+def testaa_github_osoitteet(tmp: Path):
+    print("\n[8] GitHub-osoitteet ja paikallinen/verkko-varajärjestys")
+    pohja = mk.raw_url_pohja("hein ita", "kuvat")
+    vaita(pohja.startswith(f"https://raw.githubusercontent.com/{mk.GITHUB_USER}/"
+                           f"{mk.GITHUB_REPO}/{mk.GITHUB_BRANCH}/"),
+          f"raw-osoitteen runko oikein ({pohja})")
+    vaita("hein%20ita" in pohja, f"projektinimen väli koodataan ({pohja})")
+
+    projektikansio = mk.PROJEKTIT_POLKU / "testi"
+    kohteet, _ = mk.kokoa_kohteet(projektikansio, [], 0, 10,
+                                  mk.raw_url_pohja("testi", "kuvat"),
+                                  mk.raw_url_pohja("testi", "esikatselu"))
+    vaita(kohteet and all(k["url"].endswith(k["tiedosto"]) for k in kohteet),
+          "jokaiselle kuvalle täysikokoisen url")
+    vaita(all(k["url_esikatselu"].endswith(k["tiedosto"]) for k in kohteet),
+          "jokaiselle kuvalle esikatselun url")
+
+    # Ilman github-lippua kentät jäävät tyhjiksi
+    ilman, _ = mk.kokoa_kohteet(projektikansio, [], 0, 10, "", "")
+    vaita(all(k["url"] == "" and k["url_esikatselu"] == "" for k in ilman),
+          "ilman GitHub-vientiä url-kentät ovat tyhjiä")
+
+    # Lauseke: paikallinen ensin, verkko vasta jos tiedostoa ei ole
+    lauseke = qt._kuvalauseke("esikatselu", "url_esikatselu")
+    vaita("file_exists(" in lauseke, "lauseke tarkistaa paikallisen tiedoston olemassaolon")
+    vaita(lauseke.index("file_exists(") < lauseke.index('"url_esikatselu"'),
+          "paikallinen tiedosto on ennen verkko-osoitetta")
+
+    from qgis.core import (QgsVectorLayer, QgsExpression, QgsExpressionContext,
+                           QgsExpressionContextUtils)
+    import re as _re
+    gpkg = projektikansio / "maastokuvat.gpkg"
+    taso = QgsVectorLayer(f"{gpkg}|layername={qt.TASON_NIMI}", "t", "ogr")
+    ctx = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(taso))
+    ctx.setFeature(next(taso.getFeatures()))
+    e = QgsExpression(_re.search(r'src="\[%(.*?)%\]"', taso.mapTipTemplate(), _re.S).group(1))
+    e.prepare(ctx)
+    tulos = str(e.evaluate(ctx))
+    vaita(tulos.startswith("file://") and not e.hasEvalError(),
+          f"kun kuva on levyllä, käytetään paikallista ({tulos[:40]}…)")
+    del taso
+
+
 def main():
     print("=" * 62)
     print("  maastokuvat — regressiotesti")
@@ -331,6 +375,7 @@ def main():
             testaa_gpkg_ja_tyyli(projektikansio)
             testaa_duplikaatit_ja_kasin_muokkaus(tmp, projektikansio)
             testaa_esikatselun_uusiminen(projektikansio)
+            testaa_github_osoitteet(tmp)
     finally:
         mk.PROJEKTIT_POLKU = vanha_polku
         shutil.rmtree(tmp, ignore_errors=True)
