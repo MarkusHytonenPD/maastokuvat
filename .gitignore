@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# QGIS:n aputiedostot GeoPackagen vierellä (syntyvät kun taso on avoinna)
+*.gpkg-shm
+*.gpkg-wal
+
+# Projektikohtainen raportti syntyy joka ajolla uudelleen
+projektit/*/ei_sijaintia.txt
