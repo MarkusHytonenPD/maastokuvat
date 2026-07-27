@@ -165,20 +165,25 @@ def tuo_kuvat(kuvakansiot: list[Path], projektikansio: Path, gpx_pisteet: list,
             tilastot["duplikaatti"] += 1
             continue
 
+        def _ohita(syy: str):
+            """Kirjaa ja kertoo heti miksi kuvaa ei voitu sijoittaa."""
+            tilastot["ei_sijaintia"].append((lahde.name, syy))
+            print(f"  ⚠ {lahde.name}: {syy}")
+
         lahde_tyyppi = "exif"
         if tiedot["lat"] is None:
             # Ei GPS:ää kuvassa — yritetään GPS-loggerin lokista
             if not gpx_pisteet:
-                tilastot["ei_sijaintia"].append((lahde.name, "ei EXIF-GPS:ää eikä GPX-lokia"))
+                _ohita("ei EXIF-GPS:ää eikä GPX-lokia")
                 continue
             if not tiedot["aika"]:
-                tilastot["ei_sijaintia"].append((lahde.name, "ei EXIF-aikaleimaa"))
+                _ohita("ei EXIF-aikaleimaa")
                 continue
             import datetime
             korjattu = tiedot["aika"] - datetime.timedelta(minutes=aikaero_min)
             koord, syy = eg.interpoloi(gpx_pisteet, korjattu, max_aukko_s)
             if not koord:
-                tilastot["ei_sijaintia"].append((lahde.name, syy))
+                _ohita(f"({korjattu:%d.%m. %H:%M}) {syy}")
                 continue
             tiedot["lat"], tiedot["lon"] = koord
             lahde_tyyppi = "gpx"
@@ -568,6 +573,13 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
     qml_polku = projektikansio / "maastokuvat.qml"
 
     kohde, eri_repo = ratkaise_kohde(projektikansio)
+
+    # Verkko-osoitteet kirjoitetaan tasoon myös silloin kun tätä ajoa ei pushata,
+    # jos projekti on jo kertaalleen viety GitHubiin (projekti.json on olemassa).
+    # Muuten "ei viedä nyt" tyhjentäisi toimivat osoitteet ja rikkoisi tason
+    # muilla koneilla.
+    osoitteet = github or bool(lue_projekticonfig(projektikansio))
+
     if github:
         print(f"  GitHub-kohde: {kohde['user']}/{kohde['repo']} ({kohde['branch']})")
         if eri_repo:
@@ -579,8 +591,8 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
             print(f"    tai poista {PROJEKTI_TIEDOSTO} jos haluat siirtää kuvat tähän repoon.")
 
     with qgis_kaynnissa():
-        url_kuvat = raw_url_pohja(projekti, "kuvat", kohde) if github else ""
-        url_esik = raw_url_pohja(projekti, "esikatselu", kohde) if github else ""
+        url_kuvat = raw_url_pohja(projekti, "kuvat", kohde) if osoitteet else ""
+        url_esik = raw_url_pohja(projekti, "esikatselu", kohde) if osoitteet else ""
         kohteet, ilman = kokoa_kohteet(projektikansio, gpx_pisteet, aikaero_min,
                                        max_aukko_min, url_kuvat, url_esik)
         sailytetty = sailyta_kasin_tehdyt(gpkg_polku, kohteet)
@@ -685,12 +697,10 @@ def main():
     if tilastot["ei_sijaintia"]:
         print(f"  Ilman sijaintia:    {len(tilastot['ei_sijaintia'])}  "
               f"→ {tilastot.get('raportti', '')}")
-    print()
     if github:
         tila = "pushattu" if tilastot.get("pushattu") else "EI PUSHATTU — katso viesti yllä"
         print(f"  GitHub:             {tila}")
-    print()
-    print(f"  Raahaa QGIS:iin:    {projektikansio / 'maastokuvat.gpkg'}")
+    print(f"\n  Raahaa QGIS:iin:    {projektikansio / 'maastokuvat.gpkg'}")
     print("=" * 62)
     return 0
 

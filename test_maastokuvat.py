@@ -400,6 +400,25 @@ def testaa_projektikohtainen_repo(tmp: Path):
     vaita(kohde4 == odotettu and eri4 is False,
           "naulauksen poisto vapauttaa projektin nykyiseen repoon")
 
+    # 5) "Ei viedä nyt" (github=False) ei saa tyhjentää jo vietyjä osoitteita
+    mk.kirjoita_projekticonfig(projektikansio, odotettu)
+    mk.aja("testi", [tmp / "kenttakuvat"], [], github=False)
+    taso5 = QgsVectorLayer(
+        f"{projektikansio / 'maastokuvat.gpkg'}|layername={qt.TASON_NIMI}", "t", "ogr")
+    urlit5 = [f["url"] for f in taso5.getFeatures()]
+    vaita(urlit5 and all(u for u in urlit5),
+          f"github=False säilyttää jo vietyjen kuvien osoitteet ({len(urlit5)} kpl)")
+    del taso5
+
+    # 6) Projekti jota ei ole koskaan viety → osoitteet pysyvät tyhjinä
+    conf.unlink()
+    mk.aja("testi", [tmp / "kenttakuvat"], [], github=False)
+    taso6 = QgsVectorLayer(
+        f"{projektikansio / 'maastokuvat.gpkg'}|layername={qt.TASON_NIMI}", "t", "ogr")
+    vaita(all(not f["url"] for f in taso6.getFeatures()),
+          "viemättömällä projektilla ei turhia osoitteita")
+    del taso6
+
 
 def main():
     print("=" * 62)

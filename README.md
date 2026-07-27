@@ -15,6 +15,9 @@ cd /home/markus/omat-apit/maastokuvat
 python3 maastokuvat.py
 ```
 
+Vaiheittainen ohje kysymyksistä, QGIS-käytöstä ja vianetsinnästä:
+[KAYTTOOHJE.md](KAYTTOOHJE.md).
+
 Sovellus kysyy:
 
 1. **Projektin nimi** → `projektit/[nimi]/`
@@ -227,7 +230,7 @@ Testattu: QGIS 3.44.11, Python 3.12.
 python3 test_maastokuvat.py
 ```
 
-69 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
+71 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
 EXIF-luku, GPX-interpolointi, aukkosuoja, aikavyöhykemuunnos, duplikaattisuoja,
 käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, GitHub-osoitteet,
 projektikohtainen repo ja tyylin selviäminen GeoPackagesta. Testit eivät koske oikeaan git-repoon.
@@ -240,3 +243,4 @@ projektikohtainen repo ja tyylin selviäminen GeoPackagesta. Testit eivät koske
 | `exif_gpx.py` | EXIF-luku/kirjoitus, GPX-lokit, interpolointi, aukot |
 | `qgis_taso.py` | GeoPackagen kirjoitus, symbolit, map tip, lomake, toiminnot |
 | `test_maastokuvat.py` | Regressiotesti |
+| `KAYTTOOHJE.md` | Käytännön käyttöohje: ajo, QGIS, vianetsintä |
