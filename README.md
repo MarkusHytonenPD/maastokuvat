@@ -34,6 +34,7 @@ projektit/[nimi]/
 ├── maastokuvat.gpkg    — pistetaso + tyyli tason sisällä
 ├── maastokuvat.qml     — sama tyyli erillisenä tiedostona
 ├── kasitellyt.json     — kirjanpito jo tuoduista lähdekuvista
+├── tila.json           — tason sisällön tiiviste (estää turhat uudelleenkirjoitukset)
 └── ei_sijaintia.txt    — kuvat joita ei voitu sijoittaa, syineen
 ```
 
@@ -147,6 +148,21 @@ tarjoile LFS-sisältöä kuvana, joten `<img>`-viittaus rikkoutuisi.
 Vienti tapahtuu ajon lopussa automaattisesti (`git_push`); ajossa voi vastata
 `e`, jos haluaa vain paikallisen tason. Repo ja branch ovat `maastokuvat.py`:n
 vakioissa `GITHUB_USER` / `GITHUB_REPO` / `GITHUB_BRANCH`.
+
+### Turhat commitit estetty
+
+`tila.json` sisältää tiivisteen tason datasta ja tyylistä. Jos kumpikaan ei ole
+muuttunut, `.gpkg`:tä ja `.qml`:ää ei kirjoiteta uudelleen lainkaan, joten ajo
+ilman uusia kuvia ei tuota committia. Tämä vaati kaksi asiaa:
+
+- Toimintojen UUID:t johdetaan nimestä (`_vakaa_uuid`) — satunnainen
+  `QUuid.createUuid()` vaihtoi tyylin joka ajolla.
+- Käsin täytetyt arvot luetaan vanhasta tasosta suoraan SQLitesta read-only-
+  tilassa. GeoPackagen avaaminen QGIS/GDAL:lla muuttaa tiedostoa myös silloin
+  kun mitään ei kirjoiteta.
+
+QGIS kirjoittaa `.qml`:n XML-attribuutit satunnaisessa järjestyksessä, joten
+kun taso todella kirjoitetaan, sen diff on iso vaikka muutos olisi pieni.
 
 ## Vielä päättämättä
 

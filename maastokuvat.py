@@ -325,22 +325,77 @@ def kokoa_kohteet(projektikansio: Path, gpx_pisteet: list, aikaero_min: int,
     return kohteet, ilman
 
 
+TILA_TIEDOSTO = "tila.json"
+
+
+def tason_tunniste(kohteet: list[dict], tyyli_tunniste: str) -> str:
+    """
+    Tiiviste tason sisällöstä + tyylistä. Jos tämä ei ole muuttunut, tasoa ei
+    tarvitse kirjoittaa uudelleen.
+
+    Miksi: GeoPackage tallentaa muokkausaikaleiman ja QGIS kirjoittaa .qml:n
+    XML-attribuutit satunnaisessa järjestyksessä, joten kummankin tavusisältö
+    muuttuu joka kirjoituksella. Ilman tätä tarkistusta jokainen ajo tekisi
+    turhan commitin, vaikka mikään ei olisi muuttunut.
+    """
+    import hashlib
+
+    def _arvo(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+
+    kanoninen = json.dumps(
+        [{k: _arvo(v) for k, v in sorted(kohde.items())}
+         for kohde in sorted(kohteet, key=lambda k: k["tiedosto"])],
+        ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(f"{kanoninen}|{tyyli_tunniste}".encode()).hexdigest()
+
+
+def lue_tila(projektikansio: Path) -> dict:
+    polku = projektikansio / TILA_TIEDOSTO
+    if not polku.is_file():
+        return {}
+    try:
+        return json.loads(polku.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def kirjoita_tila(projektikansio: Path, tunniste: str, kohteita: int):
+    (projektikansio / TILA_TIEDOSTO).write_text(
+        json.dumps({"tunniste": tunniste, "kohteita": kohteita,
+                    "paivitetty": _nyt()}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+
 def sailyta_kasin_tehdyt(gpkg_polku: Path, kohteet: list[dict]) -> int:
     """
     Säilyttää QGIS:ssä käsin täytetyt suunta- ja huomio-arvot, kun taso
     kirjoitetaan uudelleen. Palauttaa säilytettyjen arvojen määrän.
+
+    Luetaan suoraan SQLitesta read-only-tilassa, EI QgsVectorLayerina:
+    GeoPackagen avaaminen QGIS/GDAL:lla muuttaa tiedostoa (sisäiset taulut
+    päivittyvät) vaikka mitään ei kirjoitettaisi, jolloin joka ajo näyttäisi
+    gitissä muutokselta.
     """
+    import sqlite3
+    from qgis_taso import TASON_NIMI
+
     if not gpkg_polku.is_file():
         return 0
-    from qgis.core import QgsVectorLayer
-    from qgis_taso import TASON_NIMI
-    vanha = QgsVectorLayer(f"{gpkg_polku}|layername={TASON_NIMI}", "vanha", "ogr")
-    if not vanha.isValid():
-        return 0
+
     aiemmat = {}
-    for f in vanha.getFeatures():
-        aiemmat[f["tiedosto"]] = {"suunta": f["suunta"], "huomio": f["huomio"]}
-    del vanha          # taso ei saa jäädä elossa QGIS:n sammutuksen yli
+    try:
+        yhteys = sqlite3.connect(f"file:{gpkg_polku}?mode=ro", uri=True)
+        try:
+            for nimi, suunta, huomio in yhteys.execute(
+                    f'SELECT tiedosto, suunta, huomio FROM "{TASON_NIMI}"'):
+                aiemmat[nimi] = {"suunta": suunta, "huomio": huomio}
+        finally:
+            yhteys.close()
+    except sqlite3.Error as e:
+        print(f"  ⚠ Vanhaa tasoa ei voitu lukea ({e}) — käsin täytetyt arvot voivat kadota")
+        return 0
+
     sailytetty = 0
     for k in kohteet:
         v = aiemmat.get(k["tiedosto"])
@@ -465,10 +520,19 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
             print("  ⚠ Ei yhtään sijoitettavaa kuvaa — tasoa ei kirjoitettu.")
             tilastot["kohteita"] = 0
             return tilastot
-        maara = kirjoita_gpkg(kohteet, gpkg_polku)
-        viesti = lataa_ja_muotoile(gpkg_polku, projektikansio, qml_polku)
-        print(f"  {maara} kuvapistettä → {gpkg_polku}")
-        print(f"  tyyli: {viesti}")
+        import qgis_taso
+        tunniste = tason_tunniste(kohteet, qgis_taso.tyylin_tunniste())
+        if gpkg_polku.is_file() and lue_tila(projektikansio).get("tunniste") == tunniste:
+            print(f"  {len(kohteet)} kuvapistettä — data ja tyyli ennallaan, "
+                  f"tasoa ei kirjoitettu uudelleen")
+            tilastot["kirjoitettu"] = False
+        else:
+            maara = kirjoita_gpkg(kohteet, gpkg_polku)
+            viesti = lataa_ja_muotoile(gpkg_polku, projektikansio, qml_polku)
+            kirjoita_tila(projektikansio, tunniste, maara)
+            print(f"  {maara} kuvapistettä → {gpkg_polku}")
+            print(f"  tyyli: {viesti}")
+            tilastot["kirjoitettu"] = True
 
     if github:
         print("\n--- GitHub-vienti ---")

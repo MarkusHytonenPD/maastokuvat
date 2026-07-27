@@ -167,6 +167,19 @@ def _kuvalauseke(kentta: str = "esikatselu", url_kentta: str = "url_esikatselu")
             f" ELSE 'file://' || {paikallinen} END")
 
 
+def tyylin_tunniste() -> str:
+    """
+    Tiiviste tyylin määrittelystä. Muuttuu jos map tip, kentät, lausekkeet tai
+    kokovakiot muuttuvat — silloin taso pitää kirjoittaa uudelleen vaikka
+    kuvadata olisi ennallaan.
+    """
+    import hashlib
+    osat = [map_tip_html(), _kuvalauseke("esikatselu"), _kuvalauseke("polku", "url"),
+            str(MAP_TIP_LEVEYS), str(LOMAKE_KUVA_KORKEUS),
+            repr(KENTAT), repr(sorted(ALIAKSET.items()))]
+    return hashlib.sha256("|".join(osat).encode()).hexdigest()[:16]
+
+
 def map_tip_html() -> str:
     """Hiiriesikatselu: kuva + perustiedot."""
     return f"""<div style="font-family:sans-serif; font-size:11pt; max-width:{MAP_TIP_LEVEYS + 20}px">
@@ -289,17 +302,28 @@ def _aseta_lomake(taso, projektikansio: Path):
     taso.setDisplayExpression('"tiedosto"')
 
 
+def _vakaa_uuid(nimi: str):
+    """
+    Sama nimi → aina sama UUID. Satunnainen QUuid.createUuid() vaihtaisi
+    toiminnon tunnisteen joka ajolla, jolloin tyyli muuttuisi turhaan
+    (ja .qml/.gpkg näyttäisi muuttuneelta ilman todellista muutosta).
+    """
+    import uuid
+    from qgis.PyQt.QtCore import QUuid
+    tunnus = uuid.uuid5(uuid.NAMESPACE_URL, f"maastokuvat/toiminto/{nimi}")
+    return QUuid(f"{{{tunnus}}}")
+
+
 def _aseta_toiminnot(taso):
     """Actionit: avaa kuva katselimessa, avaa kansio."""
     from qgis.core import QgsAction, Qgis
-    from qgis.PyQt.QtCore import QUuid
 
     hallinta = taso.actions()
     for olemassa in list(hallinta.actions()):
         hallinta.removeAction(olemassa.id())
 
     tyyppi = Qgis.AttributeActionType.OpenUrl
-    kuva = QgsAction(QUuid.createUuid(), tyyppi, "Avaa kuva",
+    kuva = QgsAction(_vakaa_uuid("avaa-kuva"), tyyppi, "Avaa kuva",
                      f"[% {_kuvalauseke('polku', 'url')} %]", "", False,
                      "Avaa täysikokoinen kuva järjestelmän katselimessa",
                      {"Field", "Feature", "Canvas"})
@@ -310,7 +334,7 @@ def _aseta_toiminnot(taso):
         hallinta.setDefaultAction(laajuus, kuva.id())
 
     kansio = QgsAction(
-        QUuid.createUuid(), tyyppi, "Avaa kuvakansio",
+        _vakaa_uuid("avaa-kuvakansio"), tyyppi, "Avaa kuvakansio",
         f"[% 'file://' || {_projektikansio_lauseke()} || 'kuvat' %]",
         "", False, "Avaa projektin kuvakansio tiedostoselaimessa", {"Feature", "Canvas"})
     hallinta.addAction(kansio)
