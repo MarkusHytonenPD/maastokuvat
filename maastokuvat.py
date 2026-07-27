@@ -260,11 +260,70 @@ def git_push(viesti: str, polut: list[str]) -> bool:
 #  TASON KOKOAMINEN
 # ══════════════════════════════════════════════════════════════════
 
-def raw_url_pohja(projekti: str, alikansio: str) -> str:
+PROJEKTI_TIEDOSTO = "projekti.json"
+
+
+def raw_url_pohja(projekti: str, alikansio: str, kohde: dict | None = None) -> str:
     """GitHubin raw-osoitteen alkuosa projektin kuva- tai esikatselukansiolle."""
     from urllib.parse import quote
-    return (f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/"
-            f"{GITHUB_BRANCH}/projektit/{quote(projekti)}/{alikansio}/")
+    k = kohde or {"user": GITHUB_USER, "repo": GITHUB_REPO, "branch": GITHUB_BRANCH}
+    return (f"https://raw.githubusercontent.com/{k['user']}/{k['repo']}/"
+            f"{k['branch']}/projektit/{quote(projekti)}/{alikansio}/")
+
+
+def git_remote_tiedot() -> dict | None:
+    """{'user', 'repo', 'branch'} origin-remotesta ja nykyisestä branchista."""
+    import re
+    url = _git("remote", "get-url", "origin").stdout.strip()
+    if not url:
+        return None
+    osuma = re.search(r"(?:github\.com[:/])([^/]+)/(.+?)(?:\.git)?$", url)
+    if not osuma:
+        return None
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    return {"user": osuma.group(1), "repo": osuma.group(2),
+            "branch": branch or GITHUB_BRANCH}
+
+
+def lue_projekticonfig(projektikansio: Path) -> dict:
+    polku = projektikansio / PROJEKTI_TIEDOSTO
+    if not polku.is_file():
+        return {}
+    try:
+        tiedot = json.loads(polku.read_text(encoding="utf-8")).get("github") or {}
+        return tiedot if all(k in tiedot for k in ("user", "repo", "branch")) else {}
+    except Exception as e:
+        print(f"  ⚠ {PROJEKTI_TIEDOSTO} ei ole luettavissa ({e})")
+        return {}
+
+
+def ratkaise_kohde(projektikansio: Path) -> tuple[dict, bool]:
+    """
+    Päättää mihin repoon TÄMÄN projektin osoitteet viittaavat.
+
+    Repo tallennetaan projektikohtaisesti, koska kuvat jäävät ikuisesti siihen
+    repoon johon ne on kertaalleen viety. Kun yksi repo täyttyy ja uudet
+    projektit ohjataan uuteen, vanhan projektin uudelleenajo ei silti saa
+    kirjoittaa sen osoitteita uuteen repoon — siellä ei ole näitä kuvia.
+
+    Palauttaa (kohde, eri_repo_kuin_origin).
+    """
+    nykyinen = git_remote_tiedot() or {
+        "user": GITHUB_USER, "repo": GITHUB_REPO, "branch": GITHUB_BRANCH}
+    tallennettu = lue_projekticonfig(projektikansio)
+    if not tallennettu:
+        return nykyinen, False
+    eri = (tallennettu["user"], tallennettu["repo"]) != (nykyinen["user"], nykyinen["repo"])
+    return tallennettu, eri
+
+
+def kirjoita_projekticonfig(projektikansio: Path, kohde: dict):
+    polku = projektikansio / PROJEKTI_TIEDOSTO
+    if lue_projekticonfig(projektikansio) == kohde:
+        return
+    projektikansio.mkdir(parents=True, exist_ok=True)
+    polku.write_text(json.dumps({"github": kohde, "kirjattu": _nyt()},
+                                ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def kokoa_kohteet(projektikansio: Path, gpx_pisteet: list, aikaero_min: int,
@@ -508,9 +567,20 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
     gpkg_polku = projektikansio / "maastokuvat.gpkg"
     qml_polku = projektikansio / "maastokuvat.qml"
 
+    kohde, eri_repo = ratkaise_kohde(projektikansio)
+    if github:
+        print(f"  GitHub-kohde: {kohde['user']}/{kohde['repo']} ({kohde['branch']})")
+        if eri_repo:
+            nyk = git_remote_tiedot()
+            print(f"  ⚠ Tämän projektin kuvat ovat repossa {kohde['user']}/{kohde['repo']},")
+            print(f"    mutta tämä työkopio osoittaa repoon {nyk['user']}/{nyk['repo']}.")
+            print(f"    Osoitteita EI muuteta eikä pushata — aja projekti siinä")
+            print(f"    työkopiossa jonka origin on {kohde['user']}/{kohde['repo']},")
+            print(f"    tai poista {PROJEKTI_TIEDOSTO} jos haluat siirtää kuvat tähän repoon.")
+
     with qgis_kaynnissa():
-        url_kuvat = raw_url_pohja(projekti, "kuvat") if github else ""
-        url_esik = raw_url_pohja(projekti, "esikatselu") if github else ""
+        url_kuvat = raw_url_pohja(projekti, "kuvat", kohde) if github else ""
+        url_esik = raw_url_pohja(projekti, "esikatselu", kohde) if github else ""
         kohteet, ilman = kokoa_kohteet(projektikansio, gpx_pisteet, aikaero_min,
                                        max_aukko_min, url_kuvat, url_esik)
         sailytetty = sailyta_kasin_tehdyt(gpkg_polku, kohteet)
@@ -536,9 +606,14 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
 
     if github:
         print("\n--- GitHub-vienti ---")
-        tilastot["pushattu"] = git_push(
-            f"Maastokuvat: {projekti} ({len(kohteet)} kuvapistettä)",
-            [f"projektit/{projekti}"])
+        if eri_repo:
+            print("  Ohitettu: projekti kuuluu toiseen repoon (ks. varoitus yllä).")
+            tilastot["pushattu"] = False
+        else:
+            kirjoita_projekticonfig(projektikansio, kohde)
+            tilastot["pushattu"] = git_push(
+                f"Maastokuvat: {projekti} ({len(kohteet)} kuvapistettä)",
+                [f"projektit/{projekti}"])
 
     tilastot["kohteita"] = len(kohteet)
     tilastot["ilman_sijaintia"] = ilman

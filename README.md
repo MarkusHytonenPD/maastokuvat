@@ -35,6 +35,7 @@ projektit/[nimi]/
 ├── maastokuvat.qml     — sama tyyli erillisenä tiedostona
 ├── kasitellyt.json     — kirjanpito jo tuoduista lähdekuvista
 ├── tila.json           — tason sisällön tiiviste (estää turhat uudelleenkirjoitukset)
+├── projekti.json       — mihin GitHub-repoon tämän projektin kuvat kuuluvat
 └── ei_sijaintia.txt    — kuvat joita ei voitu sijoittaa, syineen
 ```
 
@@ -146,8 +147,51 @@ kirjoittamalla historian uudelleen. **Älä käytä Git LFS:ää** — raw-osoit
 tarjoile LFS-sisältöä kuvana, joten `<img>`-viittaus rikkoutuisi.
 
 Vienti tapahtuu ajon lopussa automaattisesti (`git_push`); ajossa voi vastata
-`e`, jos haluaa vain paikallisen tason. Repo ja branch ovat `maastokuvat.py`:n
-vakioissa `GITHUB_USER` / `GITHUB_REPO` / `GITHUB_BRANCH`.
+`e`, jos haluaa vain paikallisen tason. Kohderepo luetaan työkopion
+`origin`-remotesta; `maastokuvat.py`:n vakiot `GITHUB_USER` / `GITHUB_REPO` /
+`GITHUB_BRANCH` ovat vain varalla, jos remotea ei ole.
+
+### Kun repo täyttyy
+
+Mitattuna **89 MB per 40 kuvan projekti** (2,0 MB kuva + 0,17 MB esikatselu), eli
+1 GB ≈ 11 projektia ja 5 GB ≈ 57 projektia. Kovaa estoa ei ole; yli ~5 GB:ssä
+GitHub voi pyytää siivoamaan.
+
+Kun yksi repo täyttyy, **ohjaa uudet projektit uuteen repoon** (esim.
+`maastokuvat-2027`). Vanhat projektit toimivat ikuisesti vanhaa repoa vasten,
+koska osoitteet ovat absoluuttisia eikä niihin tarvitse koskea.
+
+Repo tallennetaan siksi **projektikohtaisesti** tiedostoon `projekti.json`:
+
+```json
+{ "github": { "user": "MarkusHytonenPD", "repo": "maastokuvat", "branch": "main" } }
+```
+
+Uusi projekti saa kohteensa työkopion `origin`-remotesta (ei koodivakiosta, jotta
+osoite ei voi erota siitä minne push menee). Jos projekti kuuluu eri repoon kuin
+työkopio, sovellus **varoittaa eikä pushaa** — muuten vanhan projektin
+uudelleenajo kirjoittaisi sen osoitteet uuteen repoon, jossa niitä kuvia ei ole.
+Poista `projekti.json`, jos haluat oikeasti siirtää projektin kuvat toiseen repoon.
+
+Muut keinot: pienempi kuvakoko uusille projekteille (2560 px ≈ 0,7 MB
+kolminkertaistaa kapasiteetin), toinen isäntä (vain URL-pohja vaihtuu), tai
+viimeisenä `git filter-repo` joka poistaa alkuperäiset historiasta ja jättää
+esikatselut — silloin map tipit toimivat mutta täysikokoisten linkit katkeavat.
+
+### Kevyt työkopio toiselle koneelle
+
+Jos et halua kuvia levylle, kloonaa ilman kuvablobeja — **552 kt** koko repon
+sijaan (mitattu):
+
+```bash
+git clone --no-checkout --filter=blob:none https://github.com/MarkusHytonenPD/maastokuvat.git
+cd maastokuvat
+git sparse-checkout set --no-cone '/*' '!/projektit/*/kuvat/*' '!/projektit/*/esikatselu/*'
+git checkout main
+```
+
+Saat `.gpkg`:t ja koodin; kuvat tulevat raw-osoitteista. Pysyy pienenä
+riippumatta repon koosta.
 
 ### Turhat commitit estetty
 
@@ -183,10 +227,10 @@ Testattu: QGIS 3.44.11, Python 3.12.
 python3 test_maastokuvat.py
 ```
 
-61 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
+69 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
 EXIF-luku, GPX-interpolointi, aukkosuoja, aikavyöhykemuunnos, duplikaattisuoja,
-käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, GitHub-osoitteet ja
-tyylin selviäminen GeoPackagesta. Testit eivät koske oikeaan git-repoon.
+käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, GitHub-osoitteet,
+projektikohtainen repo ja tyylin selviäminen GeoPackagesta. Testit eivät koske oikeaan git-repoon.
 
 ## Tiedostot
 

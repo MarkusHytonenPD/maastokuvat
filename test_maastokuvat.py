@@ -358,6 +358,49 @@ def testaa_github_osoitteet(tmp: Path):
     del taso
 
 
+def testaa_projektikohtainen_repo(tmp: Path):
+    print("\n[9] Projektikohtainen repo (kun yksi repo täyttyy)")
+    import json as _json
+    projektikansio = mk.PROJEKTIT_POLKU / "testi"
+    conf = projektikansio / mk.PROJEKTI_TIEDOSTO
+
+    # 1) Ilman projekti.json → työkopion origin (tai vakiot), ei ristiriitaa
+    conf.unlink(missing_ok=True)
+    kohde, eri = mk.ratkaise_kohde(projektikansio)
+    odotettu = mk.git_remote_tiedot() or {"user": mk.GITHUB_USER, "repo": mk.GITHUB_REPO,
+                                          "branch": mk.GITHUB_BRANCH}
+    vaita(kohde == odotettu, f"uusi projekti käyttää työkopion remotea ({kohde})")
+    vaita(eri is False, "uudella projektilla ei ristiriitaa")
+
+    # 2) Projekti naulattu VANHAAN repoon → osoitteet pysyvät siinä
+    conf.write_text(_json.dumps({"github": {"user": "MarkusHytonenPD",
+                                            "repo": "maastokuvat-vanha",
+                                            "branch": "main"}}), encoding="utf-8")
+    kohde2, eri2 = mk.ratkaise_kohde(projektikansio)
+    vaita(kohde2["repo"] == "maastokuvat-vanha", f"naulattu repo säilyy ({kohde2['repo']})")
+    vaita(eri2 is True, "ristiriita työkopion repoon havaitaan")
+    vaita("maastokuvat-vanha" in mk.raw_url_pohja("testi", "kuvat", kohde2),
+          "osoite osoittaa naulattuun repoon")
+
+    # 3) Koko ajo naulatulla repolla: osoitteet vanhaan repoon, EI pushia
+    t = mk.aja("testi", [tmp / "kenttakuvat"], [], github=True)
+    vaita(t.get("pushattu") is False, "vieraaseen repoon kuuluvaa projektia ei pushata")
+
+    from qgis.core import QgsVectorLayer
+    taso = QgsVectorLayer(
+        f"{projektikansio / 'maastokuvat.gpkg'}|layername={qt.TASON_NIMI}", "t", "ogr")
+    urlit = [f["url"] for f in taso.getFeatures()]
+    vaita(urlit and all("maastokuvat-vanha" in u for u in urlit),
+          "tason osoitteet jäivät vanhaan repoon")
+    del taso
+
+    # 4) Naulaus poistettu → uusi kohde otetaan käyttöön
+    conf.unlink()
+    kohde4, eri4 = mk.ratkaise_kohde(projektikansio)
+    vaita(kohde4 == odotettu and eri4 is False,
+          "naulauksen poisto vapauttaa projektin nykyiseen repoon")
+
+
 def main():
     print("=" * 62)
     print("  maastokuvat — regressiotesti")
@@ -376,6 +419,7 @@ def main():
             testaa_duplikaatit_ja_kasin_muokkaus(tmp, projektikansio)
             testaa_esikatselun_uusiminen(projektikansio)
             testaa_github_osoitteet(tmp)
+            testaa_projektikohtainen_repo(tmp)
     finally:
         mk.PROJEKTIT_POLKU = vanha_polku
         shutil.rmtree(tmp, ignore_errors=True)
