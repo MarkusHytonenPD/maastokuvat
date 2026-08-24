@@ -10,6 +10,11 @@ Koordinaatti otetaan kuvan EXIF:istä. Jos kuvassa ei ole GPS:ää (esim.
 järjestelmäkamera), se päätellään GPS-loggerin GPX-lokista kuvausajan
 perusteella — pitkien aukkojen yli ei interpoloida.
 
+Kuvien lähde on joko paikallinen kansio (kuvat kopioidaan projektiin ja
+viedään haluttaessa GitHubiin) tai julkinen Google Photos -jakoalbumi
+(kuvia ei kopioida lainkaan, taso viittaa Googlen osoitteisiin — ks.
+google_photos.py).
+
 Ajo:  python3 maastokuvat.py
 
 Vaatimukset: pip install pillow gpxpy piexif   +   QGIS (python3-qgis)
@@ -22,6 +27,7 @@ import sys
 from pathlib import Path
 
 import exif_gpx as eg
+import google_photos as gp
 
 SOVELLUS_POLKU = Path(__file__).resolve().parent
 PROJEKTIT_POLKU = SOVELLUS_POLKU / "projektit"
@@ -216,6 +222,179 @@ def _nyt() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  GOOGLE PHOTOS -LÄHDE
+# ══════════════════════════════════════════════════════════════════
+#
+# Kuvia EI kopioida eikä pienennetä: taso viittaa Googlen omiin osoitteisiin
+# (=d täysikokoinen, =w1200 esikatselu). Siksi polku- ja esikatselu-kentät
+# jäävät tyhjiksi ja GitHub-vienti ohitetaan.
+#
+# Hinta: taso toimii vain niin kauan kuin albumi on jaettu linkillä, eikä
+# kuvia näe ilman verkkoyhteyttä. Jos kuvat halutaan pysyviksi, sama albumi
+# pitää ladata levylle ja ajaa paikallisena kuvakansiona.
+
+GOOGLE_AVAIN = "google:"     # kirjanpidon avaimen etuliite (media-id:n edessä)
+
+
+def _google_ledger_arvo(tiedot: dict) -> dict:
+    """Kuvan EXIF-tiedot kirjanpitoon (aika ISO-muodossa)."""
+    return {
+        "tiedosto": tiedot["tiedosto"],
+        "lat": tiedot["lat"], "lon": tiedot["lon"],
+        "aika": tiedot["aika"].isoformat() if tiedot["aika"] else None,
+        "suunta": tiedot["suunta"], "korkeus": tiedot["korkeus"],
+        "valmistaja": tiedot["valmistaja"], "malli": tiedot["malli"],
+        "laitetyyppi": tiedot["laitetyyppi"],
+        "lahde": "google",
+        "lisatty": _nyt(),
+    }
+
+
+def _google_ledgerista(arvo: dict) -> dict | None:
+    """Kirjanpidon arvo takaisin EXIF-sanakirjaksi. None jos rivi on vaillinainen."""
+    import datetime
+    if not isinstance(arvo, dict) or "tiedosto" not in arvo:
+        return None
+    tiedot = {k: arvo.get(k) for k in
+              ("tiedosto", "lat", "lon", "suunta", "korkeus",
+               "valmistaja", "malli", "laitetyyppi")}
+    try:
+        tiedot["aika"] = (datetime.datetime.fromisoformat(arvo["aika"])
+                          if arvo.get("aika") else None)
+    except (TypeError, ValueError):
+        return None
+    return tiedot
+
+
+def _vapaa_nimi_joukosta(varatut: set, nimi: str) -> str:
+    """Sama kuin _vapaa_nimi, mutta levyn sijaan jo käytettyjä nimiä vasten."""
+    if nimi not in varatut:
+        varatut.add(nimi)
+        return nimi
+    runko, paate = Path(nimi).stem, Path(nimi).suffix
+    n = 2
+    while f"{runko}_{n}{paate}" in varatut:
+        n += 1
+    uusi = f"{runko}_{n}{paate}"
+    varatut.add(uusi)
+    return uusi
+
+
+def tuo_google_kuvat(albumi_linkki: str, projektikansio: Path, gpx_pisteet: list,
+                     aikaero_min: int, max_aukko_min: int) -> tuple[list[dict], list, dict]:
+    """
+    Lukee julkisen jakoalbumin ja muodostaa tasolle kohdelistan lataamatta
+    yhtään kuvaa levylle. Palauttaa (kohteet, ilman_sijaintia, tilastot).
+
+    EXIF luetaan verkosta vain kertaalleen kuvaa kohti: tulos jää
+    kasitellyt.json-kirjanpitoon media-id:n alle, joten uudelleenajo ei lataa
+    mitään. GPX-interpolointi sen sijaan tehdään joka ajossa uudelleen —
+    välimuistissa on vain kuvan oma EXIF, joten myöhemmin annettu GPX-loki
+    sijoittaa myös aiemmin hylätyt kuvat.
+    """
+    import datetime
+
+    tilastot = {"tuotu": 0, "duplikaatti": 0, "ei_sijaintia": [],
+                "gpx": 0, "exif": 0, "verkosta": 0, "kirjanpidosta": 0,
+                "albumissa": 0}
+    max_aukko_s = max_aukko_min * 60
+
+    print("\n--- Google Photos -albumi ---")
+    mediat = gp.hae_albumi(albumi_linkki)
+    tilastot["albumissa"] = len(mediat)
+    print(f"  {len(mediat)} kuvaa albumissa")
+
+    ledger_polku = projektikansio / LEDGER
+    ledger = lue_ledger(ledger_polku)
+
+    valmiit, puuttuvat = {}, []
+    for media in mediat:
+        tiedot = _google_ledgerista(ledger["kuvat"].get(GOOGLE_AVAIN + media["tunnus"]))
+        if tiedot:
+            valmiit[media["tunnus"]] = tiedot
+        else:
+            puuttuvat.append(media)
+
+    tilastot["kirjanpidosta"] = len(valmiit)
+    if valmiit:
+        print(f"  {len(valmiit)} kuvan tiedot kirjanpidosta (ei ladata uudelleen)")
+
+    syyt = {}
+    if puuttuvat:
+        print(f"  luetaan {len(puuttuvat)} kuvan EXIF verkosta "
+              f"(~{gp.EXIF_TAVUJA // 1024} kt/kuva)…")
+
+        def _edistyminen(valmis: int, yhteensa: int):
+            if valmis % 25 == 0 or valmis == yhteensa:
+                print(f"    {valmis}/{yhteensa}")
+
+        for media, tiedot, syy in gp.lue_exif_rinnakkain(puuttuvat,
+                                                        edistyminen=_edistyminen):
+            if not tiedot:
+                syyt[media["tunnus"]] = syy
+                continue
+            valmiit[media["tunnus"]] = tiedot
+            ledger["kuvat"][GOOGLE_AVAIN + media["tunnus"]] = _google_ledger_arvo(tiedot)
+            tilastot["verkosta"] += 1
+        kirjoita_ledger(ledger_polku, ledger)
+
+    kohteet, ilman, nimet = [], [], set()
+    for media in mediat:
+        tiedot = valmiit.get(media["tunnus"])
+        if not tiedot:
+            syy = syyt.get(media["tunnus"], "EXIF:iä ei voitu lukea")
+            tilastot["ei_sijaintia"].append((media["tunnus"], syy))
+            print(f"  ⚠ {media['tunnus'][:14]}…: {syy}")
+            continue
+
+        nimi = tiedot["tiedosto"]
+        t = dict(tiedot)
+        lahde, huomio = "exif", ""
+
+        if t["lat"] is None:
+            if not gpx_pisteet:
+                syy = "ei EXIF-GPS:ää eikä GPX-lokia"
+            elif not t["aika"]:
+                syy = "ei EXIF-aikaleimaa"
+            else:
+                korjattu = t["aika"] - datetime.timedelta(minutes=aikaero_min)
+                koord, syy = eg.interpoloi(gpx_pisteet, korjattu, max_aukko_s)
+                if koord:
+                    t["lat"], t["lon"] = koord
+                    lahde, huomio = "gpx", "sijainti interpoloitu GPX-lokista"
+                    syy = ""
+                else:
+                    syy = f"({korjattu:%d.%m. %H:%M}) {syy}"
+            if t["lat"] is None:
+                tilastot["ei_sijaintia"].append((nimi, syy))
+                ilman.append((nimi, syy))
+                print(f"  ⚠ {nimi}: {syy}")
+                continue
+
+        url, url_esikatselu = gp.osoitteet(media)
+        kohteet.append({
+            "lat": t["lat"], "lon": t["lon"],
+            "tiedosto": _vapaa_nimi_joukosta(nimet, nimi),
+            "aika": t["aika"],
+            "polku": "",              # kuvaa ei ole levyllä
+            "esikatselu": "",
+            "url": url,
+            "url_esikatselu": url_esikatselu,
+            "suunta": t["suunta"],
+            "korkeus": t["korkeus"],
+            "laite": " ".join(x for x in (t["valmistaja"], t["malli"]) if x) or "tuntematon",
+            "laitetyyppi": t["laitetyyppi"],
+            "lahde": lahde,
+            "huomio": huomio,
+        })
+        tilastot[lahde] += 1
+        tilastot["tuotu"] += 1
+
+    tilastot["duplikaatti"] = tilastot["kirjanpidosta"]
+    return kohteet, ilman, tilastot
+
+
+# ══════════════════════════════════════════════════════════════════
 #  GIT-VIENTI
 # ══════════════════════════════════════════════════════════════════
 
@@ -290,16 +469,38 @@ def git_remote_tiedot() -> dict | None:
             "branch": branch or GITHUB_BRANCH}
 
 
-def lue_projekticonfig(projektikansio: Path) -> dict:
+def _lue_projekti_json(projektikansio: Path) -> dict:
     polku = projektikansio / PROJEKTI_TIEDOSTO
     if not polku.is_file():
         return {}
     try:
-        tiedot = json.loads(polku.read_text(encoding="utf-8")).get("github") or {}
-        return tiedot if all(k in tiedot for k in ("user", "repo", "branch")) else {}
+        return json.loads(polku.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"  ⚠ {PROJEKTI_TIEDOSTO} ei ole luettavissa ({e})")
         return {}
+
+
+def _kirjoita_projekti_json(projektikansio: Path, muutokset: dict):
+    """Päivittää vain annetut avaimet — muut projektin asetukset säilyvät."""
+    tiedot = _lue_projekti_json(projektikansio)
+    if all(tiedot.get(k) == v for k, v in muutokset.items()):
+        return
+    tiedot.update(muutokset)
+    tiedot["kirjattu"] = _nyt()
+    projektikansio.mkdir(parents=True, exist_ok=True)
+    (projektikansio / PROJEKTI_TIEDOSTO).write_text(
+        json.dumps(tiedot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def lue_projekticonfig(projektikansio: Path) -> dict:
+    tiedot = _lue_projekti_json(projektikansio).get("github") or {}
+    return tiedot if all(k in tiedot for k in ("user", "repo", "branch")) else {}
+
+
+def lue_google_albumi(projektikansio: Path) -> str:
+    """Projektiin kertaalleen kirjattu Google Photos -jakolinkki."""
+    linkki = _lue_projekti_json(projektikansio).get("google_albumi") or ""
+    return linkki if isinstance(linkki, str) else ""
 
 
 def ratkaise_kohde(projektikansio: Path) -> tuple[dict, bool]:
@@ -323,12 +524,7 @@ def ratkaise_kohde(projektikansio: Path) -> tuple[dict, bool]:
 
 
 def kirjoita_projekticonfig(projektikansio: Path, kohde: dict):
-    polku = projektikansio / PROJEKTI_TIEDOSTO
-    if lue_projekticonfig(projektikansio) == kohde:
-        return
-    projektikansio.mkdir(parents=True, exist_ok=True)
-    polku.write_text(json.dumps({"github": kohde, "kirjattu": _nyt()},
-                                ensure_ascii=False, indent=2), encoding="utf-8")
+    _kirjoita_projekti_json(projektikansio, {"github": kohde})
 
 
 def kokoa_kohteet(projektikansio: Path, gpx_pisteet: list, aikaero_min: int,
@@ -522,6 +718,22 @@ def _kysy_gpx_polut() -> list[Path]:
     return list(dict.fromkeys(x.resolve() for x in polut))
 
 
+def _kysy_google_albumi(oletus: str = "") -> str:
+    print("\nGoogle Photos -jakoalbumin linkki (albumissa: Jaa → Kopioi linkki).")
+    print("Albumin on oltava jaettu kaikille joilla on linkki — muuten kuvat")
+    print("eivät näy QGIS:ssä.")
+    if oletus:
+        print(f"Tyhjä rivi = tälle projektille kirjattu linkki:\n  {oletus}")
+    while True:
+        syote = input("  > ").strip().strip('"')
+        if not syote:
+            return oletus
+        if gp.on_jakolinkki(syote):
+            return syote
+        print("  ⚠ Ei näytä jakolinkiltä (odotettu photos.app.goo.gl "
+              "tai photos.google.com).")
+
+
 def _kysy_luku(kysymys: str, oletus: int) -> int:
     while True:
         arvo = input(f"{kysymys} [{oletus}]: ").strip()
@@ -539,8 +751,15 @@ def _kysy_luku(kysymys: str, oletus: int) -> int:
 
 def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
         aikaero_min: int = 0, max_aukko_min: int = eg.MAX_GPX_AUKKO_MIN,
-        kirjoita_exif: bool = True, github: bool = True) -> dict:
-    """Koko putki: tuonti → taso → tyyli → GitHub-vienti. Palauttaa tilastot."""
+        kirjoita_exif: bool = True, github: bool = True,
+        google_albumi: str = "") -> dict:
+    """
+    Koko putki: tuonti → taso → tyyli → GitHub-vienti. Palauttaa tilastot.
+
+    `google_albumi`: julkinen Google Photos -jakolinkki. Kun se on annettu,
+    kuvia ei kopioida eikä viedä GitHubiin, ja `kuvakansiot`/`kirjoita_exif`
+    jäävät käyttämättä — taso viittaa suoraan Googlen osoitteisiin.
+    """
     from qgis_taso import kirjoita_gpkg, lataa_ja_muotoile, qgis_kaynnissa
 
     projektikansio = PROJEKTIT_POLKU / projekti
@@ -561,12 +780,20 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
                 if len(aukot) > 5:
                     print(f"    ... ja {len(aukot) - 5} muuta")
 
-    tilastot = tuo_kuvat(kuvakansiot, projektikansio, gpx_pisteet,
-                         aikaero_min, max_aukko_min, kirjoita_exif)
+    google_kohteet = google_ilman = None
+    if google_albumi:
+        github = False                      # kuvat pysyvät Googlessa
+        google_kohteet, google_ilman, tilastot = tuo_google_kuvat(
+            google_albumi, projektikansio, gpx_pisteet, aikaero_min, max_aukko_min)
+        tilastot["google_albumi"] = google_albumi
+        _kirjoita_projekti_json(projektikansio, {"google_albumi": google_albumi})
+    else:
+        tilastot = tuo_kuvat(kuvakansiot, projektikansio, gpx_pisteet,
+                             aikaero_min, max_aukko_min, kirjoita_exif)
 
-    uusitut = varmista_esikatselut(projektikansio)
-    if uusitut:
-        print(f"  esikatselukuvia tehty/uusittu: {uusitut}")
+        uusitut = varmista_esikatselut(projektikansio)
+        if uusitut:
+            print(f"  esikatselukuvia tehty/uusittu: {uusitut}")
 
     print("\n--- QGIS-taso ---")
     gpkg_polku = projektikansio / "maastokuvat.gpkg"
@@ -591,10 +818,13 @@ def aja(projekti: str, kuvakansiot: list[Path], gpx_polut: list[Path],
             print(f"    tai poista {PROJEKTI_TIEDOSTO} jos haluat siirtää kuvat tähän repoon.")
 
     with qgis_kaynnissa():
-        url_kuvat = raw_url_pohja(projekti, "kuvat", kohde) if osoitteet else ""
-        url_esik = raw_url_pohja(projekti, "esikatselu", kohde) if osoitteet else ""
-        kohteet, ilman = kokoa_kohteet(projektikansio, gpx_pisteet, aikaero_min,
-                                       max_aukko_min, url_kuvat, url_esik)
+        if google_kohteet is not None:
+            kohteet, ilman = google_kohteet, google_ilman
+        else:
+            url_kuvat = raw_url_pohja(projekti, "kuvat", kohde) if osoitteet else ""
+            url_esik = raw_url_pohja(projekti, "esikatselu", kohde) if osoitteet else ""
+            kohteet, ilman = kokoa_kohteet(projektikansio, gpx_pisteet, aikaero_min,
+                                           max_aukko_min, url_kuvat, url_esik)
         sailytetty = sailyta_kasin_tehdyt(gpkg_polku, kohteet)
         if sailytetty:
             print(f"  {sailytetty} käsin täytettyä arvoa säilytetty")
@@ -656,10 +886,23 @@ def main():
         print("VIRHE: projektin nimessä on kelvoton merkki.")
         return 1
 
-    kuvakansiot = _kysy_kansiot("Kuvakansio(t):")
-    if not kuvakansiot:
-        print("VIRHE: yhtään kuvakansiota ei annettu.")
-        return 1
+    print("\nKuvien lähde:")
+    print("  1) paikallinen kuvakansio — kuvat kopioidaan projektiin")
+    print("  2) Google Photos -jakoalbumi — kuvia ei kopioida, taso viittaa Googleen")
+    lahde = input("Valinta [1]: ").strip() or "1"
+
+    kuvakansiot, google_albumi = [], ""
+    if lahde == "2":
+        google_albumi = _kysy_google_albumi(
+            lue_google_albumi(PROJEKTIT_POLKU / projekti))
+        if not google_albumi:
+            print("VIRHE: albumin linkkiä ei annettu.")
+            return 1
+    else:
+        kuvakansiot = _kysy_kansiot("Kuvakansio(t):")
+        if not kuvakansiot:
+            print("VIRHE: yhtään kuvakansiota ei annettu.")
+            return 1
 
     gpx_polut, aikaero_min = [], 0
     max_aukko_min = eg.MAX_GPX_AUKKO_MIN
@@ -673,25 +916,34 @@ def main():
             print("Pidempien aukkojen (loggeri pois päältä) yli ei interpoloida.")
             max_aukko_min = _kysy_luku("  Aukko", eg.MAX_GPX_AUKKO_MIN)
 
-    kirjoita_exif = input(
-        "\nKirjoitetaanko GPX:stä saatu koordinaatti kuvakopion EXIF:iin? (K/e): "
-    ).strip().lower() != "e"
+    kirjoita_exif, github = True, False
+    if not google_albumi:
+        kirjoita_exif = input(
+            "\nKirjoitetaanko GPX:stä saatu koordinaatti kuvakopion EXIF:iin? (K/e): "
+        ).strip().lower() != "e"
 
-    github = input(
-        f"\nViedäänkö kuvat GitHubiin ({GITHUB_USER}/{GITHUB_REPO})? (K/e): "
-    ).strip().lower() != "e"
+        github = input(
+            f"\nViedäänkö kuvat GitHubiin ({GITHUB_USER}/{GITHUB_REPO})? (K/e): "
+        ).strip().lower() != "e"
 
     tilastot = aja(projekti, kuvakansiot, gpx_polut, aikaero_min,
-                   max_aukko_min, kirjoita_exif, github)
+                   max_aukko_min, kirjoita_exif, github, google_albumi)
 
     projektikansio = PROJEKTIT_POLKU / projekti
     print()
     print("=" * 62)
     print("  Valmis!")
-    print(f"  Kuvia tuotu:        {tilastot['tuotu']}  "
-          f"(EXIF {tilastot['exif']}, GPX {tilastot['gpx']})")
-    if tilastot["duplikaatti"]:
-        print(f"  Jo tuotu aiemmin:   {tilastot['duplikaatti']}")
+    if google_albumi:
+        print(f"  Kuvia albumissa:    {tilastot.get('albumissa', 0)}  "
+              f"(EXIF verkosta {tilastot.get('verkosta', 0)}, "
+              f"kirjanpidosta {tilastot.get('kirjanpidosta', 0)})")
+        print(f"  Sijoitettu:         {tilastot['tuotu']}  "
+              f"(EXIF {tilastot['exif']}, GPX {tilastot['gpx']})")
+    else:
+        print(f"  Kuvia tuotu:        {tilastot['tuotu']}  "
+              f"(EXIF {tilastot['exif']}, GPX {tilastot['gpx']})")
+        if tilastot["duplikaatti"]:
+            print(f"  Jo tuotu aiemmin:   {tilastot['duplikaatti']}")
     print(f"  Kuvapisteitä tasolla: {tilastot.get('kohteita', 0)}"
           f"  (kuvaussuunta {tilastot.get('suunnalla', 0)}:lla)")
     if tilastot["ei_sijaintia"]:
@@ -701,6 +953,9 @@ def main():
         tila = "pushattu" if tilastot.get("pushattu") else "EI PUSHATTU — katso viesti yllä"
         print(f"  GitHub:             {tila}")
     print(f"\n  Raahaa QGIS:iin:    {projektikansio / 'maastokuvat.gpkg'}")
+    if google_albumi:
+        print("  Kuvat luetaan Google Photosista: taso vaatii verkkoyhteyden ja")
+        print("  toimii niin kauan kuin albumi on jaettu linkillä.")
     print("=" * 62)
     return 0
 

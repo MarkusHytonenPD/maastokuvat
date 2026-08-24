@@ -153,30 +153,38 @@ def _kuvalauseke(kentta: str = "esikatselu", url_kentta: str = "url_esikatselu")
     QGIS-lauseke kuvan osoitteelle. Järjestys:
 
       1. paikallinen tiedosto, jos se on olemassa  → file://... (nopea, toimii offline)
-      2. muuten verkko-osoite (GitHub raw), jos kenttä on täytetty
+      2. muuten verkko-osoite (GitHub raw tai Google Photos), jos kenttä on täytetty
       3. muuten paikallinen polku joka tapauksessa (näyttää puuttuvan kuvan)
 
     Paikallinen polku johdetaan .gpkg-tiedoston omasta sijainnista, joten
     projektikansion voi siirtää. Näin sama taso toimii sekä koneella jolla
     kuvat ovat levyllä että koneella jolle on kopioitu pelkkä .gpkg.
+
+    Paikallista haaraa käytetään vain jos polku-kenttä on täytetty: Google
+    Photos -lähteessä kuvaa ei ole levyllä lainkaan, ja tyhjällä polulla
+    file_exists() osuisi projektikansioon (hakemisto on olemassa) ja
+    verkko-osoite jäisi käyttämättä.
     """
     paikallinen = (f"{_projektikansio_lauseke()}"
                    f" || coalesce(nullif(\"{kentta}\", ''), \"polku\")")
-    return (f"CASE WHEN file_exists({paikallinen}) THEN 'file://' || {paikallinen}"
+    on_polku = "coalesce(\"polku\", '') <> ''"
+    return (f"CASE WHEN {on_polku} AND file_exists({paikallinen})"
+            f" THEN 'file://' || {paikallinen}"
             f" WHEN coalesce(\"{url_kentta}\", '') <> '' THEN \"{url_kentta}\""
-            f" ELSE 'file://' || {paikallinen} END")
+            f" WHEN {on_polku} THEN 'file://' || {paikallinen}"
+            f" ELSE '' END")
 
 
 def tyylin_tunniste() -> str:
     """
-    Tiiviste tyylin määrittelystä. Muuttuu jos map tip, kentät, lausekkeet tai
-    kokovakiot muuttuvat — silloin taso pitää kirjoittaa uudelleen vaikka
-    kuvadata olisi ennallaan.
+    Tiiviste tyylin määrittelystä. Muuttuu jos map tip, kentät, lausekkeet,
+    symbolisäännöt tai kokovakiot muuttuvat — silloin taso pitää kirjoittaa
+    uudelleen vaikka kuvadata olisi ennallaan.
     """
     import hashlib
     osat = [map_tip_html(), _kuvalauseke("esikatselu"), _kuvalauseke("polku", "url"),
             str(MAP_TIP_LEVEYS), str(LOMAKE_KUVA_KORKEUS),
-            repr(KENTAT), repr(sorted(ALIAKSET.items()))]
+            repr(KENTAT), repr(sorted(ALIAKSET.items())), repr(SAANNOT)]
     return hashlib.sha256("|".join(osat).encode()).hexdigest()[:16]
 
 
@@ -192,50 +200,60 @@ def map_tip_html() -> str:
 </div>"""
 
 
-def _symbolit():
-    """(nuolisymboli, pistesymboli) — nuoli kääntyy suunta-kentän mukaan."""
+# Symbolien värit: väri kertoo mistä kuva on otettu, muoto kertoo tiedetäänkö
+# kuvaussuunta. Oranssi/sininen on turvallinen pari myös puna-vihersokealle,
+# ja muoto erottaa laitteet vielä harmaasävytulosteessa.
+VARI_MAASTA = "#e8622a"      # puhelin, järjestelmäkamera, tuntematon
+VARI_DRONE = "#1f6feb"       # drone
+
+# laitetyyppi voi olla NULL käsin muokatulla rivillä → coalesce, jotta jokainen
+# kohde osuu johonkin sääntöön. Ilman sitä sääntöpohjainen renderöijä jättäisi
+# pisteen piirtämättä kokonaan.
+_ON_DRONE = "coalesce(\"laitetyyppi\", '') = 'drone'"
+_EI_DRONE = "coalesce(\"laitetyyppi\", '') <> 'drone'"
+
+# (tunniste, selite, suodatin, muoto, koko, väri, kääntyy suunnan mukaan)
+SAANNOT = [
+    ("drone-suunta", "Drone · kuvaussuunta tiedossa",
+     f'{_ON_DRONE} AND "suunta" IS NOT NULL', "Triangle", 5.0, VARI_DRONE, True),
+    ("drone", "Drone",
+     f'{_ON_DRONE} AND "suunta" IS NULL', "Diamond", 4.0, VARI_DRONE, False),
+    ("maasta-suunta", "Maasta · kuvaussuunta tiedossa",
+     f'{_EI_DRONE} AND "suunta" IS NOT NULL', "Triangle", 5.0, VARI_MAASTA, True),
+    ("maasta", "Maasta",
+     f'{_EI_DRONE} AND "suunta" IS NULL', "Circle", 3.4, VARI_MAASTA, False),
+]
+
+
+def _symboli(muoto: str, koko: float, vari: str, suunnattu: bool):
+    """Yksi merkkisymboli. `suunnattu` → kulma tulee suunta-kentästä."""
     from qgis.core import (QgsMarkerSymbol, QgsProperty, QgsSimpleMarkerSymbolLayer,
                            QgsSimpleMarkerSymbolLayerBase, QgsSymbolLayer)
     from qgis.PyQt.QtGui import QColor
 
-    # Nuoli: kolmio joka osoittaa kuvaussuuntaan
-    nuoli = QgsMarkerSymbol()
-    kerros = QgsSimpleMarkerSymbolLayer(QgsSimpleMarkerSymbolLayerBase.Triangle)
-    kerros.setSize(5.0)
-    kerros.setColor(QColor("#e8622a"))
+    kerros = QgsSimpleMarkerSymbolLayer(getattr(QgsSimpleMarkerSymbolLayerBase, muoto))
+    kerros.setSize(koko)
+    kerros.setColor(QColor(vari))
     kerros.setStrokeColor(QColor("#ffffff"))
     kerros.setStrokeWidth(0.4)
-    kerros.setDataDefinedProperty(
-        QgsSymbolLayer.PropertyAngle, QgsProperty.fromExpression('"suunta"'))
-    nuoli.changeSymbolLayer(0, kerros)
-
-    # Ei suuntaa: pyöreä piste
-    piste = QgsMarkerSymbol()
-    ympyra = QgsSimpleMarkerSymbolLayer(QgsSimpleMarkerSymbolLayerBase.Circle)
-    ympyra.setSize(3.4)
-    ympyra.setColor(QColor("#e8622a"))
-    ympyra.setStrokeColor(QColor("#ffffff"))
-    ympyra.setStrokeWidth(0.4)
-    piste.changeSymbolLayer(0, ympyra)
-
-    return nuoli, piste
+    if suunnattu:
+        # Kulma = kompassisuunta suoraan: 0° = pohjoinen, 90° = itä.
+        kerros.setDataDefinedProperty(
+            QgsSymbolLayer.PropertyAngle, QgsProperty.fromExpression('"suunta"'))
+    symboli = QgsMarkerSymbol()
+    symboli.changeSymbolLayer(0, kerros)
+    return symboli
 
 
 def _aseta_renderer(taso):
     from qgis.core import QgsRuleBasedRenderer
-    nuoli, piste = _symbolit()
 
     juuri = QgsRuleBasedRenderer.Rule(None)
-
-    r1 = QgsRuleBasedRenderer.Rule(nuoli)
-    r1.setLabel("Kuvaussuunta tiedossa")
-    r1.setFilterExpression('"suunta" IS NOT NULL')
-    juuri.appendChild(r1)
-
-    r2 = QgsRuleBasedRenderer.Rule(piste)
-    r2.setLabel("Suunta ei tiedossa")
-    r2.setFilterExpression('"suunta" IS NULL')
-    juuri.appendChild(r2)
+    for _tunniste, selite, suodatin, muoto, koko, vari, suunnattu in SAANNOT:
+        saanto = QgsRuleBasedRenderer.Rule(_symboli(muoto, koko, vari, suunnattu))
+        saanto.setLabel(selite)
+        saanto.setFilterExpression(suodatin)
+        juuri.appendChild(saanto)
 
     taso.setRenderer(QgsRuleBasedRenderer(juuri))
 

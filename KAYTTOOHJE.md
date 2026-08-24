@@ -47,6 +47,19 @@ Projektin nimi:
 Nimi on kansion nimi, joten vältä välilyöntejä ja ääkkösiä. Sama nimi = sama
 projekti: kuvat lisätään vanhojen jatkoksi. Uusi nimi = uusi projekti.
 
+### Kuvien lähde
+
+```
+Kuvien lähde:
+  1) paikallinen kuvakansio — kuvat kopioidaan projektiin
+  2) Google Photos -jakoalbumi — kuvia ei kopioida, taso viittaa Googleen
+Valinta [1]:
+```
+
+Enter valitsee paikallisen kansion, eli vanhan tutun tavan. Valitse **2**, kun
+kuvat ovat jo Google Photosissa eikä niitä haluta kopioida levylle tai
+GitHubiin — ks. [Google Photos -jakoalbumi](#google-photos--jakoalbumi) alla.
+
 ### Kuvakansio(t)
 
 ```
@@ -63,6 +76,42 @@ päättää listan.** Ohjelma lukee kansiosta kaikki `.jpg`- ja `.jpeg`-tiedosto
 
 Helpoin tapa syöttää polku: raahaa kansio päätteeseen, niin polku ilmestyy
 itsestään.
+
+### Google Photos -jakoalbumi
+
+Kysytään vain jos valitsit lähteeksi **2**:
+
+```
+Google Photos -jakoalbumin linkki (albumissa: Jaa → Kopioi linkki).
+Albumin on oltava jaettu kaikille joilla on linkki — muuten kuvat
+eivät näy QGIS:ssä.
+  > https://photos.app.goo.gl/6RwptiEYPhoYY8vEA
+```
+
+Linkin saa Google Photosista: avaa albumi → **Jaa** → *Kopioi linkki*. Albumin
+jakoasetus on oltava **"kaikki joilla on linkki"**; muuten QGIS ei saa kuvia
+näkyviin, koska se ei kirjaudu Google-tilillesi.
+
+Linkki jää muistiin (`projekti.json`), joten seuraavassa ajossa riittää **Enter**:
+
+```
+Tyhjä rivi = tälle projektille kirjattu linkki:
+  https://photos.app.goo.gl/6RwptiEYPhoYY8vEA
+  >
+```
+
+Tässä tilassa **kuvia ei kopioida mihinkään**. Ohjelma lataa jokaisen kuvan
+alusta 128 kt lukeakseen koordinaatin EXIF:istä, ja taso viittaa Googlen
+osoitteisiin. 300 kuvan albumi kesti **37 s** ja projektikansioon jäi **412 kt**
+(vertailun vuoksi paikallinen tuonti olisi vienyt ~660 MB). Kysymyksiä
+EXIF-kirjoituksesta ja GitHubista ei tule, koska kopioita ei ole.
+
+Toinen ajo samalle albumille on lähes välitön (**3 s**): kertaalleen luetut
+EXIF-tiedot ovat `kasitellyt.json`-kirjanpidossa eikä niitä ladata uudelleen.
+
+Lue myös [README.md](README.md):n kohta *Google Photos -albumi lähteenä* —
+siinä kerrotaan mitä tässä tilassa menetetään (taso hajoaa jos albumin jako
+loppuu, kuvat vaativat verkkoyhteyden).
 
 ### GPX-lokit
 
@@ -177,6 +226,41 @@ Merkit rivien alussa:
 | ⊕ | koordinaatti pääteltiin GPX-lokista |
 | ⚠ | kuvaa ei voitu sijoittaa — syy kerrotaan, kuva ohitetaan |
 
+### Google-albumin ajo
+
+Sama ajo Google Photos -albumista (oikea ajo, 300 kuvan albumi):
+
+```
+--- Google Photos -albumi ---
+  300 kuvaa albumissa
+  luetaan 300 kuvan EXIF verkosta (~128 kt/kuva)…
+    25/300
+    50/300
+    …
+  ⚠ 20260813_095725.jpg: ei EXIF-GPS:ää eikä GPX-lokia
+  ⚠ 20260814_190008.jpg: ei EXIF-GPS:ää eikä GPX-lokia
+
+--- QGIS-taso ---
+  293 kuvapistettä → …/projektit/heinavesi_google/maastokuvat.gpkg
+  tyyli: gpkg-tyyli ok / qml: Created default style file as …
+
+==============================================================
+  Valmis!
+  Kuvia albumissa:    300  (EXIF verkosta 299, kirjanpidosta 0)
+  Sijoitettu:         293  (EXIF 293, GPX 0)
+  Kuvapisteitä tasolla: 293  (kuvaussuunta 0:lla)
+  Ilman sijaintia:    7  → …/projektit/heinavesi_google/ei_sijaintia.txt
+
+  Raahaa QGIS:iin:    …/projektit/heinavesi_google/maastokuvat.gpkg
+  Kuvat luetaan Google Photosista: taso vaatii verkkoyhteyden ja
+  toimii niin kauan kuin albumi on jaettu linkillä.
+==============================================================
+```
+
+*EXIF verkosta* kertoo montako kuvaa ladattiin nyt ja *kirjanpidosta* montako
+saatiin muistista. Toisessa ajossa luvut ovat päinvastoin, eikä verkkoa
+käytetä kuvien lukemiseen lainkaan.
+
 Ohitetut kuvat kirjataan myös tiedostoon `ei_sijaintia.txt` projektikansioon,
 joten niitä ei tarvitse etsiä ruudun tulosteesta jälkikäteen. Ohitettua kuvaa
 ei kopioida projektiin lainkaan, joten voit korjata syyn (esim. antaa puuttuvan
@@ -213,13 +297,32 @@ kamera ilmestyvät kuplaan.
 Feature Action avaa alkuperäisen 4032 px kuvan järjestelmän kuvakatselimeen.
 Sama löytyy Identify-tuloksista kohdasta *Run Actions* → **Avaa kuva**.
 
+> **Google-albumin taso:** karttavihje ja **Avaa kuva** toimivat normaalisti
+> (kuva tulee Googlelta), mutta Identify-lomakkeen kuvaruutu jää tyhjäksi —
+> se näyttää levyllä olevan tiedoston, eikä sellaista ole. Muut kentät
+> lomakkeella näkyvät kuten ennenkin.
+
 ### Symbolit
 
-- **Pyöreä piste** — kuvaussuunta ei ole tiedossa
-- **Nuoli** — kuvaussuunta tiedossa, nuoli osoittaa kuvaussuuntaan
+**Väri kertoo laitteen:**
+
+- **Oranssi** — maasta kuvattu (puhelin tai järjestelmäkamera)
+- **Sininen** — drone
+
+**Muoto kertoo suunnan:**
+
+- **Kolmio** — kuvaussuunta tiedossa, kärki osoittaa kuvaussuuntaan
+  (0° = pohjoinen, 90° = itä)
+- **Pyöreä piste** (maasta) tai **vinoneliö** (drone) — suunta ei tiedossa
 
 Useimmat puhelimet eivät tallenna kuvaussuuntaa, joten pyöreä piste on
-normaali tilanne.
+normaali tilanne. Dronen tunnistus tulee kuvan EXIF:istä automaattisesti (DJI,
+Autel, Parrot, Skydio, Yuneec) — mitään ei tarvitse valita ajossa.
+
+Layers-paneelin kolmio tason nimen edessä avaa selitteen, jossa neljä ryhmää
+näkyvät nimillä *Drone · kuvaussuunta tiedossa*, *Drone*,
+*Maasta · kuvaussuunta tiedossa* ja *Maasta*. Ryhmän voi piilottaa
+raksin poistamalla — esimerkiksi jos haluat katsoa vain dronekuvia.
 
 ---
 
@@ -258,6 +361,11 @@ huolehtimatta kaksoiskappaleista. Tunniste on tiedostonimi + kuvausaika.
 Jos poistat kuvan `kuvat/`-kansiosta käsin, se tuodaan seuraavassa ajossa
 uudelleen. Näin voi korvata huonon kuvan paremmalla.
 
+**Google-albumilla** riittää lisätä kuvat albumiin puhelimessa ja ajaa ohjelma
+uudelleen (linkkiin Enter). Vain uusien kuvien EXIF ladataan; vanhat tulevat
+kirjanpidosta. Albumista **poistettu** kuva katoaa myös tasolta, koska taso
+rakennetaan aina albumin nykyisestä sisällöstä.
+
 Jos mikään ei ole muuttunut, ohjelma sanoo sen eikä kirjoita tasoa turhaan:
 
 ```
@@ -283,6 +391,10 @@ git clone https://github.com/MarkusHytonenPD/maastokuvat.git
 Kevyt vaihtoehto ilman kuvia (552 kt koko repon sijaan) on kuvattu
 [README.md](README.md):n kohdassa *Kevyt työkopio toiselle koneelle*.
 
+Google Photos -albumista tehty taso on tässä helpoin: `.gpkg` on muutaman sadan
+kilotavun tiedosto, joka toimii millä koneella tahansa ilman repoa tai
+kloonausta. Kuvat tulevat suoraan Googlelta niin kauan kuin albumi on jaettu.
+
 ---
 
 ## 8. Vianetsintä
@@ -298,6 +410,11 @@ Kevyt vaihtoehto ilman kuvia (552 kt koko repon sijaan) on kuvattu
 | `⚠ Tämän projektin kuvat ovat repossa X` | Projekti kuuluu toiseen repoon kuin tämä työkopio. Osoitteita ei muuteta eikä pushata. Aja projekti oikeassa työkopiossa. |
 | Karttavihje ei näy | `View → Show Map Tips` päälle **ja** taso aktiiviseksi Layers-paneelissa. |
 | Kuva ei näy vihjeessä toisella koneella | Ei verkkoyhteyttä, tai kuvia ei ole viety GitHubiin. |
+| `Albumista ei löytynyt kuvia` | Linkki ei ole voimassa tai albumia ei ole jaettu linkillä. Kokeile linkkiä selaimessa. Jos se toimii selaimessa, Google on muuttanut sivunsa rakennetta — ks. [README.md](README.md), *Google Photos -albumi lähteenä*. |
+| `Ei ole Google Photos -jakolinkki` | Linkin pitää alkaa `https://photos.app.goo.gl/` tai `https://photos.google.com/share/`. Albumin nimi tai kuvakaappaus ei kelpaa. |
+| `lataus epäonnistui (HTTP 500)` | Googlen ohimenevä virhe. Ohjelma yrittää kolmesti; jos kuva silti jäi väliin, aja uudelleen — kirjanpito lataa vain puuttuvat. |
+| `ei ole kuva (video/mp4)` | Albumissa on video. Videoita ei sijoiteta kartalle. |
+| Google-albumin kuvat lakkasivat näkymästä | Albumin jakaminen on lopetettu, kuvat poistettu tai verkko poikki. Kuvat eivät ole tallessa projektissa — palauta jako tai aja albumi paikallisena kuvakansiona. |
 | Taso näyttää vanhalta QGIS:ssä | Ohjelma kirjoitti `.gpkg`:n uudelleen. Poista taso QGIS:stä ja raahaa uudelleen. |
 | Symbolit ovat QGIS:n oletuspalloja | Tyyli ei latautunut. Tason ominaisuudet → Tyyli → Lataa tyyli → `maastokuvat.qml`. |
 
@@ -309,7 +426,13 @@ GeoPackagea.
 ## 9. Huomioitavaa
 
 - **Kuvat ovat julkisia.** Repo on julkinen, koska QGIS ei saa kuvia privaatista
-  reposta. Älä vie kuvia joiden ei pidä näkyä ulkopuolisille.
+  reposta. Älä vie kuvia joiden ei pidä näkyä ulkopuolisille. Sama pätee
+  Google-albumiin: linkillä jaetun albumin kuvat näkyvät kaikille joilla on
+  `.gpkg`-tiedosto, ilman kirjautumista.
+- **Google-albumin taso ei ole arkisto.** Kuvat pysyvät vain Googlessa. Jos
+  albumin jako loppuu tai kuvat poistetaan, tason kuvat katoavat kaikki
+  kerralla. Pitkäaikaiseen säilytykseen aja kuvat paikallisena kuvakansiona,
+  jolloin ne kopioidaan projektiin ja GitHubiin.
 - **Poistaminen ei riitä.** Kertaalleen pushattu kuva jää git-historiaan, vaikka
   poistat sen myöhemmin. Mieti ennen ensimmäistä vientiä.
 - **Alkuperäiset kuvasi jäävät koskematta.** Ohjelma kopioi kuvat eikä muokkaa

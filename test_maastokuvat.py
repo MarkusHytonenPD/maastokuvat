@@ -103,6 +103,26 @@ def tee_gpx(polku: Path, jaksot: list[tuple[datetime.datetime, int, float, float
 #  TESTIT
 # ══════════════════════════════════════════════════════════════════
 
+def osuvat_saannot(taso, piirre) -> list:
+    """
+    Ne renderöijän säännöt joiden suodatin osuu tähän kohteeseen.
+
+    Sääntöpohjainen renderöijä jättää kohteen piirtämättä jos yksikään sääntö ei
+    osu, joten oikea vastaus on aina täsmälleen yksi.
+    """
+    from qgis.core import (QgsExpression, QgsExpressionContext,
+                           QgsExpressionContextUtils)
+    ctx = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(taso))
+    ctx.setFeature(piirre)
+    osuvat = []
+    for saanto in taso.renderer().rootRule().children():
+        lauseke = QgsExpression(saanto.filterExpression())
+        lauseke.prepare(ctx)
+        if lauseke.evaluate(ctx):
+            osuvat.append(saanto)
+    return osuvat
+
+
 def testaa_exif_luku(tmp: Path):
     print("\n[1] EXIF-luku")
     kuva = tmp / "exif" / "a.jpg"
@@ -233,7 +253,13 @@ def testaa_gpkg_ja_tyyli(projektikansio: Path):
 
     r = taso.renderer()
     saannot = [s.filterExpression() for s in r.rootRule().children()] if hasattr(r, "rootRule") else []
-    vaita('"suunta" IS NOT NULL' in saannot, f"nuolisääntö suunnalle löytyy ({saannot})")
+    vaita(len(saannot) == 4, f"neljä symbolisääntöä (laite × suunta) ({len(saannot)})")
+    vaita(any('"suunta" IS NOT NULL' in s for s in saannot),
+          f"nuolisääntö suunnalle löytyy ({saannot})")
+    vaita(sum("= 'drone'" in s for s in saannot) == 2,
+          f"dronelle omat säännöt suunnalla ja ilman ({saannot})")
+    vaita(all(len(osuvat_saannot(taso, f)) == 1 for f in taso.getFeatures()),
+          "jokainen kohde osuu täsmälleen yhteen sääntöön (ei piirtämättä jääviä)")
 
     i = taso.fields().indexOf("polku")
     ws = taso.editorWidgetSetup(i)
@@ -420,6 +446,221 @@ def testaa_projektikohtainen_repo(tmp: Path):
     del taso6
 
 
+def testaa_google_lahde(tmp: Path):
+    """
+    Google Photos -lähde ilman verkkoyhteyttä: albumin haku ja EXIF-luku
+    korvataan paikallisilla testikuvilla. Verkkoa vasten ajettava tarkistus on
+    erikseen (ks. README, kohta "Google Photos -albumi lähteenä").
+    """
+    print("\n[10] Google Photos -lähde (verkko korvattu paikallisilla kuvilla)")
+    import google_photos as gp
+
+    vaita(gp.on_jakolinkki("https://photos.app.goo.gl/abc123"),
+          "photos.app.goo.gl tunnistetaan jakolinkiksi")
+    vaita(gp.on_jakolinkki("https://photos.google.com/share/AF1Qip?key=x"),
+          "photos.google.com/share tunnistetaan")
+    vaita(not gp.on_jakolinkki("/home/markus/kuvat"),
+          "paikallista polkua ei tunnisteta jakolinkiksi")
+    vaita(not gp.on_jakolinkki("https://drive.google.com/kansio"),
+          "muu Google-osoite ei kelpaa jakolinkiksi")
+
+    # Sivun datalohkon jäsennys: järjestys säilyy, duplikaatit karsitaan
+    html = ('roskaa ["AF1QipEnsimmainenTunnus01",'
+            '["https://lh3.googleusercontent.com/pw/AAA111",4032,1816,null] roskaa'
+            ' ["AF1QipEnsimmainenTunnus01",'
+            '["https://lh3.googleusercontent.com/pw/AAA111",4032,1816,null]'
+            ' ["AF1QipToinenTunnus000002",'
+            '["https://lh3.googleusercontent.com/pw/BBB222",1080,1920,null]')
+    mediat = gp._jasenna_media(html)
+    vaita(len(mediat) == 2, f"kaksi kuvaa jäsennetty, duplikaatti karsittu ({len(mediat)})")
+    vaita(mediat[0]["url"].endswith("AAA111") and mediat[1]["leveys"] == 1080,
+          "url ja mitat luetaan oikein, järjestys säilyy")
+    vaita(gp._jasenna_media("ei mitään") == [], "tyhjä sivu → ei kuvia")
+
+    nimi = gp._tiedostonimi('attachment;filename="20260814_162728.jpg"', "AF1QipX")
+    vaita(nimi == "20260814_162728.jpg", f"tiedostonimi Content-Dispositionista ({nimi})")
+    vaita(gp._tiedostonimi(None, "AF1QipTunnus").endswith(".jpg"),
+          "ilman otsikkoa nimi johdetaan media-id:stä")
+
+    # Ohimenevä 5xx yritetään uudelleen (Google palautti 500:n 1/300 kuvasta),
+    # 404 ei parane odottamalla → ei turhia uusintoja.
+    import io as _io
+    import urllib.error
+    import urllib.request
+
+    class _Vastaus(_io.BytesIO):
+        headers = {"Content-Type": "image/jpeg",
+                   "Content-Disposition": 'attachment;filename="x.jpg"'}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    kutsut = []
+
+    def _urlopen(pyynto, timeout=None):
+        kutsut.append(pyynto.full_url)
+        if len(kutsut) < 3:
+            raise urllib.error.HTTPError(pyynto.full_url, 500, "Server Error", None, None)
+        return _Vastaus(b"\xff\xd8\xff\xd9")
+
+    oikea_urlopen, oikea_odotus = urllib.request.urlopen, gp.ODOTUS
+    urllib.request.urlopen, gp.ODOTUS = _urlopen, 0
+    try:
+        data, _otsikko, virhe = gp._lataa_alku("https://lh3.example/x=d", 1024)
+        vaita(not virhe and data and len(kutsut) == 3,
+              f"kaksi 500:aa ja kolmas onnistuu ({len(kutsut)} yritystä, virhe={virhe!r})")
+
+        kutsut.clear()
+
+        def _urlopen_404(pyynto, timeout=None):
+            kutsut.append(pyynto.full_url)
+            raise urllib.error.HTTPError(pyynto.full_url, 404, "Not Found", None, None)
+
+        urllib.request.urlopen = _urlopen_404
+        _d, _o, virhe404 = gp._lataa_alku("https://lh3.example/y=d", 1024)
+        vaita("404" in virhe404 and len(kutsut) == 1,
+              f"404 ei aiheuta uusintoja ({len(kutsut)} yritys, {virhe404})")
+    finally:
+        urllib.request.urlopen, gp.ODOTUS = oikea_urlopen, oikea_odotus
+
+    varatut = set()
+    a = mk._vapaa_nimi_joukosta(varatut, "kuva.jpg")
+    b = mk._vapaa_nimi_joukosta(varatut, "kuva.jpg")
+    vaita((a, b) == ("kuva.jpg", "kuva_2.jpg"), f"samanniminen kuva saa uuden nimen ({a}, {b})")
+
+    # ── Testialbumi: puhelin, puhelin+suunta, järjestelmäkamera ilman
+    #    GPS:ää ja drone — laitetyypin pitää selvitä myös verkon kautta ──
+    kansio = tmp / "google_kuvat"
+    tee_jpeg(kansio / "g1.jpg", datetime.datetime(2026, 7, 20, 10, 5),
+             lat=62.41, lon=28.41, make="samsung", model="SM-G991B")
+    tee_jpeg(kansio / "g2.jpg", datetime.datetime(2026, 7, 20, 10, 6),
+             lat=62.42, lon=28.42, suunta=180.0, make="samsung")
+    tee_jpeg(kansio / "g3.jpg", datetime.datetime(2026, 7, 20, 10, 7),
+             make="Canon", model="EOS R")                       # ei GPS:ää
+    tee_jpeg(kansio / "g4.jpg", datetime.datetime(2026, 7, 20, 10, 8),
+             lat=62.43, lon=28.43, suunta=95.0, korkeus=87.5,
+             make="DJI", model="FC3411")                        # drone
+
+    albumi = [{"tunnus": f"AF1QipTestiTunnus{i:06d}",
+               "url": f"https://lh3.googleusercontent.com/pw/TESTI{i}",
+               "leveys": 80, "korkeus": 60} for i in range(1, 5)]
+    tiedostot = {albumi[i]["tunnus"]: kansio / f"g{i + 1}.jpg" for i in range(4)}
+    lataukset = []
+
+    def _mock_exif(media, tavuja=gp.EXIF_TAVUJA):
+        lataukset.append(media["tunnus"])
+        polku = tiedostot[media["tunnus"]]
+        tiedot = eg.lue_kuvan_tiedot(polku)
+        tiedot["tiedosto"] = polku.name
+        return tiedot, ""
+
+    oikea_haku, oikea_exif = gp.hae_albumi, gp.lue_exif
+    gp.hae_albumi, gp.lue_exif = (lambda linkki: list(albumi)), _mock_exif
+    LINKKI = "https://photos.app.goo.gl/testialbumi"
+    try:
+        t = mk.aja("google", [], [], google_albumi=LINKKI)
+
+        vaita(t["albumissa"] == 4, f"albumin kuvamäärä raportoidaan ({t.get('albumissa')})")
+        vaita(t["verkosta"] == 4, f"neljän kuvan EXIF luettu 'verkosta' ({t['verkosta']})")
+        vaita(t["tuotu"] == 3 and t["exif"] == 3,
+              f"kolme GPS-kuvaa sijoitettu ({t['tuotu']})")
+        vaita(t["ei_sijaintia"] and t["ei_sijaintia"][0][0] == "g3.jpg",
+              f"GPS:tön kuva jäi sijoittamatta ({t['ei_sijaintia']})")
+        vaita("pushattu" not in t, "Google-lähteellä ei yritetä GitHub-vientiä")
+
+        projektikansio = mk.PROJEKTIT_POLKU / "google"
+        vaita(not (projektikansio / "kuvat").exists(),
+              "kuvia EI kopioitu levylle (kuvat-kansiota ei synny)")
+        vaita(not (projektikansio / "esikatselu").exists(),
+              "esikatselukuvia ei tehty")
+        vaita(mk.lue_google_albumi(projektikansio) == LINKKI,
+              "albumin linkki kirjattiin projekti.jsoniin")
+
+        # Toinen ajo: kirjanpito estää uudet EXIF-latauket
+        lataukset.clear()
+        t2 = mk.aja("google", [], [], google_albumi=LINKKI)
+        vaita(not lataukset, f"uudelleenajo ei lataa EXIF:iä uudelleen ({lataukset})")
+        vaita(t2["kirjanpidosta"] == 4 and t2["verkosta"] == 0,
+              f"kaikki neljä kirjanpidosta ({t2['kirjanpidosta']})")
+        vaita(t2["kirjoitettu"] is False, "muuttumatonta tasoa ei kirjoiteta uudelleen")
+
+        # Taso: osoitteet Googleen, ei paikallisia polkuja
+        from qgis.core import (QgsExpression, QgsExpressionContext,
+                               QgsExpressionContextUtils, QgsVectorLayer)
+        gpkg = projektikansio / "maastokuvat.gpkg"
+        taso = QgsVectorLayer(f"{gpkg}|layername={qt.TASON_NIMI}", "t", "ogr")
+        piirteet = list(taso.getFeatures())
+        vaita(len(piirteet) == 3, f"tasolla kolme kuvapistettä ({len(piirteet)})")
+
+        # Laitetyyppi erottelee dronen ja järjestelmäkameran myös verkon kautta:
+        # EXIF Make luetaan samasta 128 kt:n alusta kuin koordinaatti.
+        tyypit = {f["tiedosto"]: (f["laitetyyppi"], f["laite"], f["korkeus"])
+                  for f in piirteet}
+        vaita(tyypit.get("g1.jpg", (None,))[0] == "puhelin",
+              f"Samsung → puhelin ({tyypit.get('g1.jpg')})")
+        vaita(tyypit.get("g4.jpg", (None,))[0] == "drone",
+              f"DJI → drone ({tyypit.get('g4.jpg')})")
+        vaita(tyypit.get("g4.jpg", (None, None, None))[1] == "DJI FC3411",
+              f"dronen kamera tallentuu ({tyypit.get('g4.jpg')})")
+        korkeus = tyypit.get("g4.jpg", (None, None, None))[2]
+        vaita(korkeus is not None and abs(float(korkeus) - 87.5) < 0.1,
+              f"dronen lentokorkeus luetaan EXIF:istä ({korkeus})")
+
+        # Dronelle piirtyy oma symboli: sininen, ja puhelinkuvalle oranssi
+        for tiedosto, odotettu_vari in (("g4.jpg", qt.VARI_DRONE),
+                                        ("g1.jpg", qt.VARI_MAASTA)):
+            piirre = next(f for f in piirteet if f["tiedosto"] == tiedosto)
+            osuvat = osuvat_saannot(taso, piirre)
+            vari = osuvat[0].symbol().color().name() if len(osuvat) == 1 else "?"
+            vaita(len(osuvat) == 1 and vari.lower() == odotettu_vari.lower(),
+                  f"{tiedosto} → {osuvat[0].label() if osuvat else 'ei sääntöä'} ({vari})")
+
+        vaita(all(f["url"].endswith(gp.ALKUPERAINEN) for f in piirteet),
+              "täysikokoisen osoite päättyy =d (EXIF mukana)")
+        vaita(all(f["url_esikatselu"].endswith(gp.ESIKATSELU) for f in piirteet),
+              "esikatselun osoite päättyy =w1200")
+        vaita(all(not f["polku"] and not f["esikatselu"] for f in piirteet),
+              "polku- ja esikatselu-kentät ovat tyhjiä")
+        vaita(all(f["laite"] and f["lahde"] == "exif" for f in piirteet),
+              "laite ja koordinaatin lähde tallentuvat")
+
+        ctx = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(taso))
+        ctx.setFeature(piirteet[0])
+        import re as _re
+        for nimi_, lauseke in (("map tip", _re.search(r'src="\[%(.*?)%\]"',
+                                                      taso.mapTipTemplate(), _re.S).group(1)),
+                               ("Avaa kuva", qt._kuvalauseke("polku", "url"))):
+            e = QgsExpression(lauseke)
+            e.prepare(ctx)
+            tulos = str(e.evaluate(ctx))
+            vaita(tulos.startswith("https://lh3.googleusercontent.com/") and not e.hasEvalError(),
+                  f"{nimi_} osoittaa Googleen kun kuvaa ei ole levyllä ({tulos[:46]}…)")
+        del taso
+
+        # GPX-haara toimii myös Google-lähteellä: g3 saa sijainnin lokista
+        gpx = tmp / "google_gpx" / "loki.gpx"
+        tee_gpx(gpx, [(datetime.datetime(2026, 7, 20, 10, 0), 20, 62.40, 28.40)])
+        t3 = mk.aja("google", [], [gpx], google_albumi=LINKKI)
+        vaita(t3["tuotu"] == 4 and t3["gpx"] == 1,
+              f"GPS:tön kuva sijoitettiin GPX-lokista ({t3['tuotu']}, gpx {t3['gpx']})")
+        vaita(t3["verkosta"] == 0,
+              "GPX-interpolointi tehtiin ilman uutta EXIF-latausta")
+
+        taso3 = QgsVectorLayer(f"{gpkg}|layername={qt.TASON_NIMI}", "t", "ogr")
+        tyypit3 = {f["tiedosto"]: (f["laitetyyppi"], f["lahde"]) for f in taso3.getFeatures()}
+        vaita(tyypit3.get("g3.jpg") == ("jarjestelmakamera", "gpx"),
+              f"Canon → järjestelmäkamera, sijainti GPX:stä ({tyypit3.get('g3.jpg')})")
+        vaita(sorted({t[0] for t in tyypit3.values()}) ==
+              ["drone", "jarjestelmakamera", "puhelin"],
+              f"kaikki kolme laitetyyppiä erottuvat tasolla ({sorted({t[0] for t in tyypit3.values()})})")
+        del taso3
+    finally:
+        gp.hae_albumi, gp.lue_exif = oikea_haku, oikea_exif
+
+
 def main():
     print("=" * 62)
     print("  maastokuvat — regressiotesti")
@@ -439,6 +680,7 @@ def main():
             testaa_esikatselun_uusiminen(projektikansio)
             testaa_github_osoitteet(tmp)
             testaa_projektikohtainen_repo(tmp)
+            testaa_google_lahde(tmp)
     finally:
         mk.PROJEKTIT_POLKU = vanha_polku
         shutil.rmtree(tmp, ignore_errors=True)

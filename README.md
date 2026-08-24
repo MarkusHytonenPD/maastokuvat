@@ -21,12 +21,18 @@ Vaiheittainen ohje kysymyksistä, QGIS-käytöstä ja vianetsinnästä:
 Sovellus kysyy:
 
 1. **Projektin nimi** → `projektit/[nimi]/`
-2. **Kuvakansio(t)** — yksi polku per rivi, tyhjä rivi lopettaa
-3. **GPX-lokit** (valinnainen) — tiedostoja tai kansio; monta lokia sallittu
-4. **Kameran kellodrifti** minuutteina — vain kellon heitto, aikavyöhyke hoidetaan itse
-5. **Suurin sallittu GPX-aukko** minuutteina (oletus 10)
-6. **Kirjoitetaanko GPX-koordinaatti kuvakopion EXIF:iin** (oletus kyllä)
-7. **Viedäänkö kuvat GitHubiin** (oletus kyllä)
+2. **Kuvien lähde** — `1` paikallinen kuvakansio (oletus) tai `2` Google Photos
+   -jakoalbumi (ks. [Google Photos -albumi lähteenä](#google-photos--albumi-lähteenä))
+3. **Kuvakansio(t)** tai **albumin linkki** — kansioita yksi polku per rivi,
+   tyhjä rivi lopettaa
+4. **GPX-lokit** (valinnainen) — tiedostoja tai kansio; monta lokia sallittu
+5. **Kameran kellodrifti** minuutteina — vain kellon heitto, aikavyöhyke hoidetaan itse
+6. **Suurin sallittu GPX-aukko** minuutteina (oletus 10)
+7. **Kirjoitetaanko GPX-koordinaatti kuvakopion EXIF:iin** (oletus kyllä)
+8. **Viedäänkö kuvat GitHubiin** (oletus kyllä)
+
+Kohdat 7–8 kysytään vain paikalliselle kuvakansiolle: Google-lähteessä kuvia ei
+kopioida, joten niiden EXIF:iin ei kirjoiteta eikä niitä viedä GitHubiin.
 
 ## Mitä syntyy
 
@@ -38,9 +44,13 @@ projektit/[nimi]/
 ├── maastokuvat.qml     — sama tyyli erillisenä tiedostona
 ├── kasitellyt.json     — kirjanpito jo tuoduista lähdekuvista
 ├── tila.json           — tason sisällön tiiviste (estää turhat uudelleenkirjoitukset)
-├── projekti.json       — mihin GitHub-repoon tämän projektin kuvat kuuluvat
+├── projekti.json       — GitHub-repo ja/tai Google-albumin linkki
 └── ei_sijaintia.txt    — kuvat joita ei voitu sijoittaa, syineen
 ```
+
+Google Photos -lähteellä `kuvat/`- ja `esikatselu/`-kansioita ei synny lainkaan:
+projektikansioon jää vain `.gpkg`, `.qml` ja kirjanpito, yhteensä joitakin satoja
+kilotavuja.
 
 **Raahaa `maastokuvat.gpkg` QGIS:iin.** Tyyli tulee mukana automaattisesti,
 koska se on tallennettu GeoPackagen `layer_styles`-tauluun. Jos se jostain syystä
@@ -53,7 +63,8 @@ ei tule, lataa `maastokuvat.qml` käsin: tason ominaisuudet → Tyyli → Lataa 
 | **Hiiriesikatselu** | *View → Show Map Tips* (suom. Näytä karttavihjeet), myös nappina Attributes Toolbarissa → osoita pistettä | 620 px |
 | **Lomakekuva** | *Identify Features* → `Kuva`-kentässä liite-widget näyttää kuvan | lomakkeen leveys × 480 px |
 | **Avaa katselimessa** | Attributes Toolbarin **Feature Action** -nappi (pudotusvalikossa) → klikkaa pistettä. Myös Identify-tuloksissa → *Run Actions* → **Avaa kuva** | alkuperäinen, 4032 px |
-| **Kuvaussuunta** | Nuoli kääntyy `suunta`-kentän mukaan; ilman suuntaa pyöreä piste | |
+| **Kuvaussuunta** | Nuoli kääntyy `suunta`-kentän mukaan; ilman suuntaa pyöreä piste tai vinoneliö | |
+| **Drone erikseen** | Dronekuvat piirtyvät sinisinä, maasta kuvatut oranssina | |
 
 Karttavihje toimii vain kun **taso on aktiivisena** Layers-panelissa.
 
@@ -67,6 +78,35 @@ täysikokoisen kuvan yhdellä klikkauksella ilman valikoita.
 
 Kuvan polku johdetaan lausekkeessa `.gpkg`-tiedoston omasta sijainnista, joten
 koko `projektit/[nimi]/`-kansion voi siirtää ilman että viittaukset katkeavat.
+
+## Symbolit
+
+Väri kertoo laitteen, muoto kertoo tiedetäänkö kuvaussuunta:
+
+| Symboli | Sääntö | Selite tasolla |
+|---|---|---|
+| Sininen kolmio, kääntyy | `laitetyyppi = 'drone'` ja suunta tiedossa | Drone · kuvaussuunta tiedossa |
+| Sininen vinoneliö | drone, ei suuntaa | Drone |
+| Oranssi kolmio, kääntyy | muu laite ja suunta tiedossa | Maasta · kuvaussuunta tiedossa |
+| Oranssi piste | muu laite, ei suuntaa | Maasta |
+
+Värit: maasta `#e8622a`, drone `#1f6feb`. Oranssi/sininen on turvallinen pari
+myös puna-vihersokealle, ja **muoto** erottaa laitteet vielä harmaasävy-
+tulosteessa. Drone tunnistetaan EXIF `Make` -kentästä (dji, autel, parrot,
+skydio, yuneec — `exif_gpx.tunnista_laite`), joten mitään ei tarvitse valita
+ajossa.
+
+Säännöt ovat listassa `qgis_taso.SAANNOT` (suodatin, muoto, koko, väri,
+kääntyykö). Lista on mukana `tyylin_tunniste()`-tiivisteessä, joten symbolin
+muokkaus saa seuraavan ajon kirjoittamaan tason uudelleen myös silloin kun
+kuvadata on ennallaan.
+
+Suodattimissa on `coalesce("laitetyyppi", '')`, koska sääntöpohjainen renderöijä
+jättäisi kohteen piirtämättä kokonaan jos yksikään sääntö ei osu — NULL-arvo
+käsin muokatulla rivillä riittäisi hukkaamaan pisteen kartalta.
+
+Nuolen kulma on kompassisuunta suoraan. Mitattu renderöidyistä pikseleistä:
+0° → pohjoinen, 45° → koillinen, 90° → itä, 180° → etelä, 270° → länsi.
 
 ## Kuvaussuunta
 
@@ -110,6 +150,87 @@ ei alkuperäiseen kuvaan. Näin kuva on paikkatietoinen missä tahansa ohjelmass
 mutta lähdekansio jää koskemattomaksi. (Sisarsovellus `pipeline.py` kirjoittaa
 lähdekuvaan, koska se ei kopioi kuvia erikseen.)
 
+## Google Photos -albumi lähteenä
+
+Lähteeksi voi antaa julkisen Google Photos -jakoalbumin linkin
+(`https://photos.app.goo.gl/…`). Silloin **kuvia ei kopioida mihinkään**: taso
+viittaa suoraan Googlen osoitteisiin, ja `kuvat/`-kansiota ei synny.
+
+```
+url            → https://lh3.googleusercontent.com/pw/[tunnus]=d       (alkuperäinen)
+url_esikatselu → https://lh3.googleusercontent.com/pw/[tunnus]=w1200   (map tip)
+```
+
+Albumi on jaettava **"kaikille joilla on linkki"**, muuten kuvat eivät näy
+QGIS:ssä. Linkki kirjataan `projekti.json`-tiedostoon, joten uudelleenajossa
+riittää painaa Enter.
+
+### Miksi ei Googlen APIa
+
+| Este | Seuraus |
+|---|---|
+| Library API rajattiin **31.3.2025** vain sovelluksen itse lataamaan sisältöön; jaettujen albumien funktiot palauttavat `403 PERMISSION_DENIED` | albumia ei voi listata API:lla |
+| API **ei palauta EXIF-GPS:ää** (Google jätti sijainnin pois tietosuojasyistä) | juuri se tieto jota tämä sovellus tarvitsee puuttuisi |
+| API:n `baseUrl` vanhenee **60 minuutissa** | osoitetta ei voi tallentaa GeoPackageen |
+
+Siksi `google_photos.py` lukee jakolinkin julkisen sivun ja poimii sen
+datalohkosta kuvien `lh3.googleusercontent.com`-osoitteet. Ne toimivat ilman
+kirjautumista. **Tämä ei ole dokumentoitu rajapinta:** jos Google muuttaa sivun
+rakennetta, korjattava kohta on `google_photos._MEDIA`.
+
+### Miten koordinaatit saadaan
+
+Pienennetystä `=w1200`-kuvasta EXIF on riisuttu, mutta `=d` tarjoilee
+alkuperäisen tiedoston GPS-kenttineen — ja tukee **Range-pyyntöä**. Sovellus
+lataa vain kuvan ensimmäiset **128 kt** (`google_photos.EXIF_TAVUJA`), mikä
+riittää koko EXIF-lohkoon. 300 kuvan albumi maksaa siis ~40 MB eikä 600 MB, ja
+mitään ei jää levylle. Lataukset tehdään 8 rinnakkain (~40 s / 300 kuvaa).
+
+Tulos jää `kasitellyt.json`-kirjanpitoon Googlen media-id:n alle, joten
+**uudelleenajo ei lataa mitään**. GPX-interpolointi sen sijaan tehdään joka
+ajossa uudelleen — välimuistissa on vain kuvan oma EXIF — joten myöhemmin
+annettu GPX-loki sijoittaa myös aiemmin hylätyt kuvat.
+
+Samasta 128 kt:n alusta luetaan kaikki muutkin EXIF-kentät, joten
+**laitetyyppi** (puhelin / drone / järjestelmäkamera), kamera, kuvausaika,
+kuvaussuunta ja korkeus toimivat Google-lähteessä täsmälleen kuten
+paikallisilla kuvilla — myös järjestelmäkameran kuvien sijoittaminen
+GPX-lokista.
+
+### Mitä menetetään
+
+- **Osoitteiden pysyvyys ei ole taattu.** Jos albumin jakaminen lopetetaan, kuva
+  poistetaan tai Google kierrättää tunnisteet, tason kuvat katoavat kaikki
+  kerralla — eikä paikallista varakopiota ole.
+- **Taso vaatii verkkoyhteyden.** Paikallisella kuvakansiolla kuvat luetaan
+  levyltä ja verkko on vain vara; Google-lähteessä verkko on ainoa lähde.
+- **Identify-lomakkeen liite-widget jää tyhjäksi**, koska se näyttää
+  `polku`-kentän tiedostoa eikä sitä ole. Map tip ja **Avaa kuva** toimivat
+  normaalisti — ne käyttävät verkko-osoitetta.
+- Videoita ja muita ei-JPEG-tiedostoja ei sijoiteta; ne kirjataan
+  `ei_sijaintia.txt`:hin syineen.
+- Albumin kuvat luetaan sivun ensimmäisestä datalohkosta. 300 kuvan albumi
+  luettiin kokonaan; **paljon suuremmilla albumeilla sivutusta ei ole testattu**
+  — ajo kertoo montako kuvaa löytyi, joten luku kannattaa vilkaista.
+
+Jos kuvat halutaan pysyviksi, sama albumi kannattaa ladata levylle (Google
+Takeout tai albumin lataus zipinä) ja ajaa paikallisena kuvakansiona — silloin
+kuvat menevät myös GitHubiin.
+
+### Verifiointi verkkoa vasten
+
+Regressiotesti ajaa Google-haaran ilman verkkoa (albumin haku ja EXIF-luku
+korvataan paikallisilla kuvilla). Aitoa albumia vasten mitattu 24.8.2026,
+300 kuvan albumi:
+
+| Asia | Tulos |
+|---|---|
+| Albumin jäsennys | 300 kuvaa, 1,2 s |
+| `=d` + Range `0-131071` | HTTP 206, EXIF + GPS luettu, `Content-Disposition` antoi alkuperäisen nimen |
+| `=w1200` | 225 kt, EXIF riisuttu |
+| 16 kuvan EXIF rinnakkain | 2,1 s |
+| Map tipin renderöinti | QtWebKit latasi kuvan Googlelta (1200 × 540 px) — sama moottori jota QGIS:n karttavihje käyttää |
+
 ## Kuvat GitHubissa
 
 Kuvat viedään repoon **[MarkusHytonenPD/maastokuvat](https://github.com/MarkusHytonenPD/maastokuvat)**
@@ -124,9 +245,11 @@ url_esikatselu → …/main/projektit/[nimi]/esikatselu/[tiedosto]   (1200 px, ~
 jota QGIS ei osaa antaa, joten kuvat eivät näkyisi lainkaan.
 
 **Paikallinen tiedosto voittaa aina.** Tason lauseke on
-`CASE WHEN file_exists(paikallinen) THEN file://… WHEN url <> '' THEN url ELSE … END`,
+`CASE WHEN "polku" <> '' AND file_exists(paikallinen) THEN file://… WHEN url <> '' THEN url ELSE … END`,
 eli tällä koneella kuvat luetaan levyltä (nopea, toimii offline) ja verkko-osoitetta
-käytetään vain jos tiedostoa ei ole.
+käytetään vain jos tiedostoa ei ole. Ehto `"polku" <> ''` on Google-lähteen takia:
+tyhjällä polulla `file_exists()` osuisi projektikansioon (hakemisto on olemassa)
+ja verkko-osoite jäisi käyttämättä.
 
 ### Toinen kone
 
@@ -230,10 +353,16 @@ Testattu: QGIS 3.44.11, Python 3.12.
 python3 test_maastokuvat.py
 ```
 
-71 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
+114 väittämää oikeilla JPEG- ja GPX-tiedostoilla väliaikaishakemistossa:
 EXIF-luku, GPX-interpolointi, aukkosuoja, aikavyöhykemuunnos, duplikaattisuoja,
-käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, GitHub-osoitteet,
-projektikohtainen repo ja tyylin selviäminen GeoPackagesta. Testit eivät koske oikeaan git-repoon.
+käsin täytettyjen arvojen säilyminen, esikatselun uusiminen, symbolisäännöt
+(drone omalla värillä, jokainen kohde osuu täsmälleen yhteen sääntöön),
+GitHub-osoitteet,
+projektikohtainen repo, Google Photos -lähde (puhelin, drone ja
+järjestelmäkamera) ja tyylin selviäminen
+GeoPackagesta. Testit eivät koske oikeaan git-repoon **eivätkä verkkoon**:
+Google-haara ajetaan paikallisilla kuvilla, jotka korvaavat albumin haun ja
+EXIF-latauksen.
 
 ## Tiedostot
 
@@ -241,6 +370,7 @@ projektikohtainen repo ja tyylin selviäminen GeoPackagesta. Testit eivät koske
 |---|---|
 | `maastokuvat.py` | Ajo ja kyselyt, kuvien tuonti, tason kokoaminen |
 | `exif_gpx.py` | EXIF-luku/kirjoitus, GPX-lokit, interpolointi, aukot |
+| `google_photos.py` | Google Photos -jakoalbumin luku: albumin jäsennys, EXIF Range-pyynnöllä |
 | `qgis_taso.py` | GeoPackagen kirjoitus, symbolit, map tip, lomake, toiminnot |
 | `test_maastokuvat.py` | Regressiotesti |
 | `KAYTTOOHJE.md` | Käytännön käyttöohje: ajo, QGIS, vianetsintä |
